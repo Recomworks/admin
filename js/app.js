@@ -78,10 +78,29 @@
     return [fieldsObj[cols.line1], fieldsObj[cols.line2], fieldsObj[cols.town], fieldsObj[cols.county], fieldsObj[cols.postcode], fieldsObj[cols.country]]
       .filter(function (x) { return x && x.trim(); }).join(', ');
   }
+  // Copies address values from one column-name mapping to another (e.g. a
+  // job's site_* fields onto a client's decomm_* columns) so the two
+  // "shapes" of address columns can share the same value without a
+  // separate remap written out by hand every time.
+  function remapAddress(fieldsObj, fromCols, toCols) {
+    var out = {};
+    ['line1', 'line2', 'town', 'county', 'postcode', 'country'].forEach(function (k) {
+      out[toCols[k]] = fieldsObj[fromCols[k]];
+    });
+    return out;
+  }
+  function addressHasContent(rec, cols) {
+    return !!(rec && (rec[cols.line1] || rec[cols.town] || rec[cols.postcode]));
+  }
   var CUSTOMER_ADDR_COLS = { line1: 'address_line1', line2: 'address_line2', town: 'town', county: 'county', postcode: 'postcode', country: 'country' };
   var ENGINEER_ADDR_COLS = CUSTOMER_ADDR_COLS;
   var JOB_SITE_ADDR_COLS = { line1: 'site_address_line1', line2: 'site_address_line2', town: 'site_town', county: 'site_county', postcode: 'site_postcode', country: 'site_country' };
   var JOB_MOVETO_ADDR_COLS = { line1: 'move_to_address_line1', line2: 'move_to_address_line2', town: 'move_to_town', county: 'move_to_county', postcode: 'move_to_postcode', country: 'move_to_country' };
+  // A client (or a customer with no intermediary client) can save its own
+  // "site being decommissioned" / "moving to" addresses so they're reused
+  // automatically on future jobs instead of being retyped every time.
+  var CUSTOMER_DECOMM_ADDR_COLS = { line1: 'decomm_address_line1', line2: 'decomm_address_line2', town: 'decomm_town', county: 'decomm_county', postcode: 'decomm_postcode', country: 'decomm_country' };
+  var CUSTOMER_NEWSITE_ADDR_COLS = { line1: 'new_site_address_line1', line2: 'new_site_address_line2', town: 'new_site_town', county: 'new_site_county', postcode: 'new_site_postcode', country: 'new_site_country' };
 
   // ── Supabase Storage helper: short-lived signed URL for a private file ──
   async function signedUrl(bucket, path, seconds) {
@@ -413,6 +432,12 @@
   // between us and the customer, not something to put in front of the
   // contractor), with a blank line separating each distinct date so a
   // multi-day job reads as clearly grouped blocks.
+  function phaseLabel(phase) {
+    return phase === 'recommission' ? 'Recommission (new site)' : 'Decommission';
+  }
+  function phaseShortLabel(phase) {
+    return phase === 'recommission' ? 'Recomm.' : 'Decom.';
+  }
   function groupedItineraryLines(job) {
     if (job.bookingLines && job.bookingLines.length) {
       var sorted = job.bookingLines.slice().sort(function (a, b) {
@@ -427,7 +452,11 @@
         var d = new Date(l.booking_date + 'T00:00:00');
         var timeRange = (l.start_time ? l.start_time.slice(0, 5) : '') + (l.end_time ? '–' + l.end_time.slice(0, 5) : '');
         var eng = l.engineer_id ? engineerNames([l.engineer_id])[0] : null;
-        out.push(friendlyDate(d) + (timeRange ? ' ' + timeRange : '') + (eng ? ' — ' + eng : ''));
+        // Only worth labelling the phase when the job actually has a second
+        // (new site) address to distinguish from — a plain decommission-only
+        // job doesn't need "Decommission" repeated on every line.
+        var phasePart = job.has_move_to_address ? ' [' + phaseLabel(l.phase) + ']' : '';
+        out.push(friendlyDate(d) + (timeRange ? ' ' + timeRange : '') + phasePart + (eng ? ' — ' + eng : ''));
       });
       return out;
     }
@@ -495,7 +524,8 @@
         var j = en.job, l = en.line;
         var timeLabel = l ? (l.start_time ? l.start_time.slice(0, 5) : '—') : fmtTime(new Date(j.start_at));
         var rateLabel = l && l.charge_rate_name ? ' · ' + esc(l.charge_rate_name) : '';
-        return '<div class="job-chip status-' + j.status + '">' + timeLabel + ' ' + esc(j.client_name || customerName(j.customer_id)) + rateLabel + '</div>';
+        var phaseLabelPart = (l && j.has_move_to_address) ? ' · ' + esc(phaseShortLabel(l.phase)) : '';
+        return '<div class="job-chip status-' + j.status + '">' + timeLabel + ' ' + esc(j.client_name || customerName(j.customer_id)) + phaseLabelPart + rateLabel + '</div>';
       }).join('');
       var more = dayEntries.length > 3 ? '<div class="chip-more">+' + (dayEntries.length - 3) + ' more</div>' : '';
       html += '<div class="cal-day' + (inMonth ? '' : ' out') + (key === todayStr ? ' today' : '') + '" data-date="' + key + '">' +
@@ -536,12 +566,22 @@
         var eng = l ? (l.engineer_id ? engineerNames([l.engineer_id])[0] : null) : null;
         var engLabel = l ? (eng || 'Unassigned') : (engineerNames(j.engineerIds).join(', ') || 'Unassigned');
         var rateLabel = l && l.charge_rate_name ? l.charge_rate_name + (l.charge_amount != null ? ' (' + money(l.charge_amount) + ')' : '') : '';
+        // On a job with a "moving to a new site" leg, show which phase this
+        // particular line/date is and the matching address, so a two-day
+        // (or same-day AM/PM) decom + recommission job reads clearly.
+        var phaseAddress = null;
+        if (l && j.has_move_to_address) {
+          phaseAddress = l.phase === 'recommission' ? assembleAddress(j, JOB_MOVETO_ADDR_COLS) : j.site_address;
+        }
+        var phaseBadge = (l && j.has_move_to_address) ? ' <span class="badge status-unassigned">' + esc(phaseLabel(l.phase)) + '</span>' : '';
         return '<div class="panel" style="padding:12px 14px; cursor:pointer;" data-job-id="' + j.id + '">' +
           '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">' +
           '<strong style="font-size:14px;">' + timeLabel + ' — ' + esc(j.client_name || customerName(j.customer_id)) + '</strong>' +
           '<span class="badge status-' + j.status + '">' + j.status + '</span></div>' +
-          '<div style="font-size:13px; color:var(--muted); margin-top:4px;">' + esc(j.service_type || '') +
-          (rateLabel ? ' · ' + esc(rateLabel) : '') + ' · ' + esc(engLabel) + '</div></div>';
+          '<div style="font-size:13px; color:var(--muted); margin-top:4px;">' + esc(j.service_type || '') + phaseBadge +
+          (rateLabel ? ' · ' + esc(rateLabel) : '') + ' · ' + esc(engLabel) + '</div>' +
+          (phaseAddress ? '<div style="font-size:13px; color:var(--muted); margin-top:2px;">' + esc(phaseAddress) + '</div>' : '') +
+          '</div>';
       }).join('');
       list.querySelectorAll('[data-job-id]').forEach(function (el) {
         el.addEventListener('click', function () {
@@ -625,23 +665,33 @@
       job.description ? 'Description: ' + job.description : ''
     ].filter(Boolean).join('\n');
 
-    // One VEVENT per distinct date + time-slot, listing whichever
-    // engineer(s) are booked in for that slot.
+    // One VEVENT per distinct date + time-slot + phase, listing whichever
+    // engineer(s) are booked in for that slot. Keying by phase too (not
+    // just date+time) means a same-day AM decommission + PM recommission
+    // never gets merged into a single misleading event.
+    var moveToAddress = job.has_move_to_address ? assembleAddress(job, JOB_MOVETO_ADDR_COLS) : null;
     var groups = [];
     if (job.bookingLines && job.bookingLines.length) {
       job.bookingLines.forEach(function (l) {
-        var key = l.booking_date + '|' + (l.start_time || '') + '|' + (l.end_time || '');
+        var phase = job.has_move_to_address ? (l.phase || 'decommission') : 'decommission';
+        var key = l.booking_date + '|' + (l.start_time || '') + '|' + (l.end_time || '') + '|' + phase;
         var g = groups.find(function (x) { return x.key === key; });
-        if (!g) { g = { key: key, date: l.booking_date, startTime: l.start_time, endTime: l.end_time, engineers: [] }; groups.push(g); }
+        if (!g) { g = { key: key, date: l.booking_date, startTime: l.start_time, endTime: l.end_time, phase: phase, engineers: [] }; groups.push(g); }
         if (l.engineer_id) { var name = engineerNames([l.engineer_id])[0]; if (name) g.engineers.push(name); }
       });
     } else if (job.start_at) {
-      groups.push({ key: 'legacy', date: fmtDate(new Date(job.start_at)), startTime: fmtTime(new Date(job.start_at)), endTime: job.end_at ? fmtTime(new Date(job.end_at)) : null, engineers: engineerNames(job.engineerIds) });
+      groups.push({ key: 'legacy', date: fmtDate(new Date(job.start_at)), startTime: fmtTime(new Date(job.start_at)), endTime: job.end_at ? fmtTime(new Date(job.end_at)) : null, phase: 'decommission', engineers: engineerNames(job.engineerIds) });
     }
 
     var stamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
     var subject = jobEmailSubject(job, cust);
     var events = groups.map(function (g, idx) {
+      // Each event's location follows its own phase: the site being
+      // decommissioned for a decommission line, the new site for a
+      // recommission line — falls back to the site address if a
+      // recommission line has no new-site address on file.
+      var eventLocation = (g.phase === 'recommission' && moveToAddress) ? moveToAddress : (job.site_address || '');
+      var eventSummary = job.has_move_to_address ? subject + ' — ' + phaseLabel(g.phase) : subject;
       var desc = descriptionLines + (g.engineers.length ? '\nEngineer(s): ' + g.engineers.join(', ') : '');
       return [
         'BEGIN:VEVENT',
@@ -649,8 +699,8 @@
         'DTSTAMP:' + stamp,
         'DTSTART:' + icsDateTime(g.date, g.startTime),
         'DTEND:' + icsDateTime(g.date, g.endTime || g.startTime),
-        'SUMMARY:' + icsEscape(subject),
-        'LOCATION:' + icsEscape(job.site_address || ''),
+        'SUMMARY:' + icsEscape(eventSummary),
+        'LOCATION:' + icsEscape(eventLocation),
         'DESCRIPTION:' + icsEscape(desc),
         'END:VEVENT'
       ].join('\r\n');
@@ -722,6 +772,10 @@
 
   $('job-has-move-to').addEventListener('change', function () {
     $('job-move-to-section').hidden = !this.checked;
+    // A "phase" per booking line (decommission vs. the new site) is only
+    // meaningful once there IS a new site to distinguish from — show/hide
+    // that selector on every line accordingly.
+    renderBookingLines();
   });
 
   // ── booking lines: repeatable date + time + rate + engineer rows ──
@@ -733,6 +787,7 @@
       booking_date: defaultDate || fmtDate(new Date()),
       start_time: '09:00',
       end_time: '',
+      phase: 'decommission',
       charge_rate_id: '',
       charge_rate_name: null,
       charge_amount: null,
@@ -775,6 +830,13 @@
         esc(e.name) + (e.active ? '' : ' (inactive)') + '</option>';
     }).join('');
     var statusBadge = line.id ? ' <span class="badge status-' + (line.payment_status || 'unpaid') + '">' + paymentStatusLabel(line.payment_status || 'unpaid') + '</span>' : '';
+    // Only worth asking which site a line is for once the job actually
+    // has a second (new) site to be for.
+    var showPhase = $('job-has-move-to').checked;
+    var phaseField = showPhase ? '<div class="field"><label>Phase</label><select class="bl-phase">' +
+      '<option value="decommission"' + (line.phase !== 'recommission' ? ' selected' : '') + '>Decommission (old site)</option>' +
+      '<option value="recommission"' + (line.phase === 'recommission' ? ' selected' : '') + '>Recommission (new site)</option>' +
+      '</select></div>' : '';
     return '<div class="booking-line-card" data-line-key="' + line._key + '">' +
       '<div class="booking-line-head"><span class="booking-line-label">Booking line' + statusBadge + '</span>' +
       '<button type="button" class="btn btn-ghost btn-sm booking-line-remove" data-remove-line="' + line._key + '">Remove</button></div>' +
@@ -783,6 +845,7 @@
       '<div class="field"><label>Start</label><input type="time" class="bl-start" value="' + esc(line.start_time || '') + '"></div>' +
       '<div class="field"><label>End</label><input type="time" class="bl-end" value="' + esc(line.end_time || '') + '"></div>' +
       '</div>' +
+      (showPhase ? '<div class="field-row" style="grid-template-columns:1fr;">' + phaseField + '</div>' : '') +
       '<div class="field-row">' +
       '<div class="field"><label>Rate charged</label><select class="bl-rate">' + rateOptions + '</select></div>' +
       '<div class="field"><label>Amount charged</label><input type="number" step="0.01" min="0" class="bl-amount" placeholder="0.00" value="' + (line.charge_amount != null ? line.charge_amount : '') + '"></div>' +
@@ -800,6 +863,8 @@
     card.querySelector('.bl-date').addEventListener('change', function () { line.booking_date = this.value; renderBookingLines(); });
     card.querySelector('.bl-start').addEventListener('change', function () { line.start_time = this.value; renderBookingLines(); });
     card.querySelector('.bl-end').addEventListener('change', function () { line.end_time = this.value; });
+    var phaseSel = card.querySelector('.bl-phase');
+    if (phaseSel) phaseSel.addEventListener('change', function () { line.phase = this.value; });
     card.querySelector('.bl-rate').addEventListener('change', function () {
       var selectedId = this.value;
       var rate = state.chargeRates.find(function (r) { return r.id === selectedId; });
@@ -870,6 +935,39 @@
     renderBookingLines();
   });
 
+  // The Client dropdown only ever lists clients of whichever Customer is
+  // currently selected — repopulated whenever that selection changes.
+  function populateJobClientOptions(customerId) {
+    var clientSel = $('job-client');
+    var clients = state.customers.filter(function (c) { return c.parent_customer_id === customerId; })
+      .sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
+    clientSel.innerHTML = '<option value="">— No client (book directly against the customer) —</option>' +
+      clients.map(function (c) { return '<option value="' + c.id + '">' + esc(c.company_name) + '</option>'; }).join('');
+  }
+  $('job-customer').addEventListener('change', function () {
+    populateJobClientOptions(this.value);
+    $('job-client').value = '';
+    $('job-client-new').value = '';
+  });
+  // Picking a client on a brand-new job pre-fills the site/moving-to
+  // addresses from whatever was saved on that client last time — never on
+  // an existing job, so an edit never silently overwrites what's actually
+  // saved on that job.
+  $('job-client').addEventListener('change', function () {
+    $('job-client-new').value = '';
+    if ($('job-id').value) return;
+    var clientId = this.value;
+    var client = clientId ? state.customers.find(function (c) { return c.id === clientId; }) : null;
+    if (!client) return;
+    if (addressHasContent(client, CUSTOMER_DECOMM_ADDR_COLS)) fillAddressFields('job-site', client, CUSTOMER_DECOMM_ADDR_COLS);
+    if (addressHasContent(client, CUSTOMER_NEWSITE_ADDR_COLS)) {
+      $('job-has-move-to').checked = true;
+      $('job-move-to-section').hidden = false;
+      fillAddressFields('job-moveto', client, CUSTOMER_NEWSITE_ADDR_COLS);
+      renderBookingLines();
+    }
+  });
+
   function openJobModal(job, presetDate) {
     var form = $('form-job');
     form.reset();
@@ -878,8 +976,8 @@
     $('job-delete').hidden = !job;
 
     // Jobs are booked against a top-level customer; which of their
-    // clients the job is actually for is captured separately below in
-    // the "Client name" field, so clients don't clutter this list.
+    // clients the job is actually for is picked separately below (Client
+    // dropdown), so clients don't clutter this list.
     var customerSel = $('job-customer');
     var topLevelCustomers = state.customers.filter(function (c) { return !c.parent_customer_id; });
     // If this job is already saved against a customer that's since become
@@ -893,7 +991,13 @@
 
     if (job) {
       customerSel.value = job.customer_id || '';
-      $('job-client-name').value = job.client_name || '';
+      populateJobClientOptions(job.customer_id || '');
+      $('job-client').value = job.client_id || '';
+      // A legacy job may have a free-text client name with no real client
+      // record behind it yet — surface it in the "add a new client" box
+      // rather than silently dropping it, so it's never lost and stays
+      // one save away from becoming a real linked record.
+      $('job-client-new').value = (!job.client_id && job.client_name) ? job.client_name : '';
       $('job-service').value = job.service_type || 'IT Relocations';
       $('job-status').value = job.status || 'unassigned';
       $('job-onsite-name').value = job.onsite_contact_name || '';
@@ -923,6 +1027,7 @@
             booking_date: l.booking_date,
             start_time: l.start_time ? l.start_time.slice(0, 5) : '',
             end_time: l.end_time ? l.end_time.slice(0, 5) : '',
+            phase: l.phase || 'decommission',
             charge_rate_id: l.charge_rate_id || '', charge_rate_name: l.charge_rate_name, charge_amount: l.charge_amount,
             engineer_id: l.engineer_id || '', cost_amount: l.cost_amount,
             payment_status: l.payment_status || 'unpaid', invoice_received_at: l.invoice_received_at, paid_at: l.paid_at
@@ -975,6 +1080,7 @@
   $('form-job').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('job-id').value;
+    var existingJob = id ? state.jobs.find(function (j) { return j.id === id; }) : null;
     var siteAddrFields = readAddressFields('job-site', JOB_SITE_ADDR_COLS);
     var hasMoveTo = $('job-has-move-to').checked;
     var moveToFields = readAddressFields('job-moveto', JOB_MOVETO_ADDR_COLS);
@@ -988,6 +1094,31 @@
     for (var i = 0; i < lines.length; i++) {
       if (!lines[i].booking_date) { toast('Every booking line needs a date.', true); return; }
     }
+
+    var customerId = $('job-customer').value || null;
+
+    // Resolve which client this job is for: an existing one from the
+    // dropdown, a brand-new one typed into the "add a new client" box
+    // (created here and linked immediately), or none — in which case a
+    // legacy free-text client name already on this job (never linked) is
+    // left exactly as it was rather than silently erased.
+    var clientId = $('job-client').value || null;
+    var newClientName = $('job-client-new').value.trim();
+    var clientRecord = null;
+    if (!clientId && newClientName) {
+      var insClient = await sb.from('customers').insert({
+        company_name: newClientName,
+        parent_customer_id: customerId,
+        updated_at: new Date().toISOString()
+      }).select().single();
+      if (insClient.error) { toast('Could not create client: ' + insClient.error.message, true); return; }
+      clientRecord = insClient.data;
+      clientId = clientRecord.id;
+    } else if (clientId) {
+      clientRecord = state.customers.find(function (c) { return c.id === clientId; });
+    }
+    var clientNameSnapshot = clientRecord ? clientRecord.company_name
+      : (clientId ? '' : (existingJob ? (existingJob.client_name || '') : ''));
 
     // jobs.start_at / end_at are NOT NULL and drive the flat Jobs-list sort
     // and the old Outlook feed — derive them from the earliest/latest
@@ -1003,8 +1134,9 @@
     var endAt = lastLine.end_time ? new Date(lastLine.booking_date + 'T' + lastLine.end_time + ':00') : null;
 
     var payload = Object.assign({
-      customer_id: $('job-customer').value || null,
-      client_name: $('job-client-name').value.trim(),
+      customer_id: customerId,
+      client_id: clientId,
+      client_name: clientNameSnapshot,
       service_type: $('job-service').value,
       status: $('job-status').value,
       onsite_contact_name: $('job-onsite-name').value.trim(),
@@ -1035,9 +1167,23 @@
       jobId = ins.data.id;
     }
 
+    // Keep the client's own saved addresses up to date with whatever was
+    // just used on this job, so the next job booked for them pre-fills
+    // correctly — the "moving to" side is only touched when this job
+    // actually has one, so an unticked box here never erases an address
+    // saved from an earlier job.
+    if (clientId) {
+      var clientAddrPayload = Object.assign(
+        { updated_at: new Date().toISOString() },
+        remapAddress(siteAddrFields, JOB_SITE_ADDR_COLS, CUSTOMER_DECOMM_ADDR_COLS)
+      );
+      if (hasMoveTo) Object.assign(clientAddrPayload, remapAddress(moveToFields, JOB_MOVETO_ADDR_COLS, CUSTOMER_NEWSITE_ADDR_COLS));
+      var clientAddrRes = await sb.from('customers').update(clientAddrPayload).eq('id', clientId);
+      if (clientAddrRes.error) toast('Job saved, but could not update the client\'s saved address: ' + clientAddrRes.error.message, true);
+    }
+
     // Diff booking lines by id rather than delete-all-and-reinsert, so a
     // line's payment status survives an edit to any *other* line on the job.
-    var existingJob = id ? state.jobs.find(function (j) { return j.id === id; }) : null;
     var existingIds = (existingJob && existingJob.bookingLines || []).map(function (l) { return l.id; });
     var keptIds = lines.filter(function (l) { return l.id; }).map(function (l) { return l.id; });
     var toRemove = existingIds.filter(function (lid) { return keptIds.indexOf(lid) === -1; });
@@ -1052,6 +1198,7 @@
         booking_date: l.booking_date,
         start_time: l.start_time || null,
         end_time: l.end_time || null,
+        phase: hasMoveTo ? (l.phase || 'decommission') : 'decommission',
         charge_rate_id: l.charge_rate_id || null,
         charge_rate_name: l.charge_rate_name || null,
         charge_amount: l.charge_amount,
@@ -1072,6 +1219,7 @@
         booking_date: l.booking_date,
         start_time: l.start_time || null,
         end_time: l.end_time || null,
+        phase: hasMoveTo ? (l.phase || 'decommission') : 'decommission',
         charge_rate_id: l.charge_rate_id || null,
         charge_rate_name: l.charge_rate_name || null,
         charge_amount: l.charge_amount,
@@ -1084,6 +1232,7 @@
 
     hide($('modal-job'));
     toast('Job saved.');
+    await loadCustomers();
     await loadJobs();
     renderCalendar(); renderJobsTable();
   });
@@ -1176,7 +1325,24 @@
     if (!logoHtml) logoHtml = '<div class="logo-preview"><span>No logo</span></div>';
 
     var address = assembleAddress(c, CUSTOMER_ADDR_COLS);
+    var decommAddress = assembleAddress(c, CUSTOMER_DECOMM_ADDR_COLS);
+    var newSiteAddress = assembleAddress(c, CUSTOMER_NEWSITE_ADDR_COLS);
     var isClient = !!parent;
+    // Jobs booked directly for this record — a client's own jobs
+    // (job.client_id), or (on a plain customer's page) jobs booked
+    // straight against the customer with no intermediary client.
+    var ownJobs = state.jobs.filter(function (j) {
+      return isClient ? j.client_id === c.id : (j.customer_id === c.id && !j.client_id);
+    }).sort(function (a, b) {
+      var ad = jobBookingDates(a)[0] || '', bd = jobBookingDates(b)[0] || '';
+      return bd.localeCompare(ad);
+    });
+    var jobsListHtml = ownJobs.length ? ownJobs.map(function (j) {
+      return '<div class="client-row" data-job-id="' + j.id + '"><span>' + esc(jobDateRangeLabel(j)) +
+        ' <span style="color:var(--muted);">— ' + esc(j.service_type || '—') + '</span></span>' +
+        '<span class="badge status-' + j.status + '">' + esc(j.status) + '</span></div>';
+    }).join('') : '<p class="clients-empty">No jobs booked yet.</p>';
+
     var body =
       '<div class="detail-header">' + logoHtml +
       '<div><div style="font-size:20px; font-weight:700; font-family:\'Space Grotesk\',system-ui,sans-serif;">' + esc(c.company_name) + '</div></div></div>' +
@@ -1188,8 +1354,16 @@
       '<div class="detail-field"><div class="detail-label">Email</div><div class="detail-value">' + esc(c.email || '—') + '</div></div>' +
       '<div class="detail-field"><div class="detail-label">Address</div><div class="detail-value">' + esc(address || '—') + '</div></div>' +
       '</div>' +
+      (decommAddress || newSiteAddress ? '<div class="detail-field-row">' +
+        (decommAddress ? '<div class="detail-field"><div class="detail-label">Site being decommissioned</div><div class="detail-value">' + esc(decommAddress) + '</div></div>' : '<div class="detail-field"></div>') +
+        (newSiteAddress ? '<div class="detail-field"><div class="detail-label">Moving to</div><div class="detail-value">' + esc(newSiteAddress) + '</div></div>' : '<div class="detail-field"></div>') +
+        '</div>' : '') +
       (isClient ? '<div class="detail-field" style="margin-bottom:16px;"><div class="detail-label">Customer</div><div class="detail-value"><a href="#" id="customer-detail-parent-link">' + esc(parent.company_name) + '</a></div></div>' : '') +
       (c.notes ? '<div class="detail-field" style="margin-bottom:16px;"><div class="detail-label">Notes</div><div class="detail-value">' + esc(c.notes) + '</div></div>' : '') +
+      '<div class="subsection">' +
+      '<div class="subsection-title">Jobs</div>' +
+      '<div id="customer-detail-jobs">' + jobsListHtml + '</div>' +
+      '</div>' +
       (isClient ? '' :
         '<div class="subsection">' +
         '<div class="subsection-title">Clients</div>' +
@@ -1197,6 +1371,13 @@
         '<button class="btn btn-ghost btn-sm" type="button" id="customer-detail-add-client">+ Add client</button>' +
         '</div>');
     $('customer-detail-body').innerHTML = body;
+
+    $('customer-detail-jobs').querySelectorAll('[data-job-id]').forEach(function (row) {
+      row.addEventListener('click', function () {
+        hide($('modal-customer-detail'));
+        openJobModal(state.jobs.find(function (j) { return j.id === row.dataset.jobId; }));
+      });
+    });
 
     if (isClient) {
       $('customer-detail-parent-link').addEventListener('click', function (e) {
@@ -1306,6 +1487,8 @@
     $('customer-phone').value = c ? (c.phone || '') : '';
     $('customer-email').value = c ? (c.email || '') : '';
     fillAddressFields('customer', c, CUSTOMER_ADDR_COLS);
+    fillAddressFields('customer-decomm', c, CUSTOMER_DECOMM_ADDR_COLS);
+    fillAddressFields('customer-newsite', c, CUSTOMER_NEWSITE_ADDR_COLS);
     $('customer-notes').value = c ? (c.notes || '') : '';
 
     // Logo upload needs a saved customer id (files are stored per-id) —
@@ -1352,23 +1535,43 @@
   $('form-customer').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('customer-id').value;
+    var companyName = $('customer-company').value.trim();
+    var parentId = $('customer-parent-field').hidden ? null : ($('customer-parent').value || null);
     var payload = Object.assign({
-      company_name: $('customer-company').value.trim(),
-      parent_customer_id: $('customer-parent-field').hidden ? null : ($('customer-parent').value || null),
+      company_name: companyName,
+      parent_customer_id: parentId,
       contact_name: $('customer-contact').value.trim(),
       contact_position: $('customer-contact-position').value.trim(),
       phone: $('customer-phone').value.trim(),
       email: $('customer-email').value.trim(),
       notes: $('customer-notes').value.trim(),
       updated_at: new Date().toISOString()
-    }, readAddressFields('customer', CUSTOMER_ADDR_COLS));
+    }, readAddressFields('customer', CUSTOMER_ADDR_COLS),
+       readAddressFields('customer-decomm', CUSTOMER_DECOMM_ADDR_COLS),
+       readAddressFields('customer-newsite', CUSTOMER_NEWSITE_ADDR_COLS));
     var res = id ? await sb.from('customers').update(payload).eq('id', id)
                  : await sb.from('customers').insert(payload).select().single();
     if (res.error) { toast('Could not save customer: ' + res.error.message, true); return; }
     var savedId = id || (res.data && res.data.id);
+
+    // A brand-new client that matches a job's old free-text client name
+    // (typed before real client records existed) gets retroactively
+    // linked to that job — closes the loop from the "seen on jobs — no
+    // customer record yet" promote flow without any extra step.
+    if (!id && parentId) {
+      var matchingJobs = state.jobs.filter(function (j) {
+        return !j.client_id && j.customer_id === parentId &&
+          (j.client_name || '').trim().toLowerCase() === companyName.toLowerCase();
+      });
+      if (matchingJobs.length) {
+        await sb.from('jobs').update({ client_id: savedId }).in('id', matchingJobs.map(function (j) { return j.id; }));
+      }
+    }
+
     hide($('modal-customer'));
     toast('Customer saved.');
     await loadCustomers();
+    await loadJobs();
     renderCustomersTable(); renderClientsTable(); renderCalendar(); renderJobsTable();
     // Land back on a detail view: a client's own customer (so the new/
     // edited client shows up in context in its parent's list), otherwise
