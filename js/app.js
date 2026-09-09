@@ -97,10 +97,27 @@
     $('enroll-secret').textContent = '';
     hide($('enroll-error'));
 
+    // Clean up any leftover unverified factor from an abandoned earlier
+    // setup attempt (e.g. the page was closed/reloaded mid-QR-scan) —
+    // Supabase refuses a same-name enroll while one is still sitting there.
+    var existing = await sb.auth.mfa.listFactors();
+    var stale = (existing.data && existing.data.totp || []).filter(function (f) { return f.status === 'unverified'; });
+    for (var i = 0; i < stale.length; i++) {
+      await sb.auth.mfa.unenroll({ factorId: stale[i].id });
+    }
+
     var res = await sb.auth.mfa.enroll({ factorType: 'totp' });
     if (res.error) { authError($('enroll-error'), res.error); return; }
     state.pendingFactorId = res.data.id;
-    $('enroll-qr-box').innerHTML = '<img src="' + res.data.totp.qr_code + '" alt="Scan with your authenticator app">';
+    // Build the <img> via the DOM rather than an HTML string: Supabase's
+    // QR code is an SVG data URI containing raw double quotes, which would
+    // otherwise close the src="..." attribute early and leak the rest of
+    // the markup as visible text.
+    $('enroll-qr-box').innerHTML = '';
+    var qrImg = document.createElement('img');
+    qrImg.src = res.data.totp.qr_code;
+    qrImg.alt = 'Scan with your authenticator app';
+    $('enroll-qr-box').appendChild(qrImg);
     $('enroll-secret').textContent = res.data.totp.secret;
   }
 
