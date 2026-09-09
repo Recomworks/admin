@@ -119,7 +119,7 @@
         <div style="overflow-x:auto;">
           <table class="data-table" id="jobs-table">
             <thead>
-              <tr><th>Date</th><th>Customer</th><th>Service</th><th>Site</th><th>Engineer(s)</th><th>Status</th><th>Profit</th><th></th></tr>
+              <tr><th>Date</th><th>Customer</th><th>Client</th><th>Service</th><th>Site</th><th>Engineer(s)</th><th>Status</th><th>Profit</th><th></th></tr>
             </thead>
             <tbody id="jobs-tbody"></tbody>
           </table>
@@ -181,7 +181,7 @@
       <div class="panel">
         <div style="overflow-x:auto;">
           <table class="data-table" id="payments-table">
-            <thead><tr><th>Date</th><th>Customer</th><th>Job</th><th>Engineer</th><th>Cost</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Date</th><th>Customer</th><th>Job</th><th>Rate</th><th>Engineer</th><th>Cost</th><th>Status</th><th></th></tr></thead>
             <tbody id="payments-tbody"></tbody>
           </table>
         </div>
@@ -286,6 +286,10 @@
         <label for="job-customer">Customer</label>
         <select id="job-customer" required></select>
       </div>
+      <div class="field">
+        <label for="job-client-name">Client name</label>
+        <input id="job-client-name" type="text" placeholder="e.g. Insight Hub">
+      </div>
       <div class="field-row">
         <div class="field">
           <label for="job-service">Service type</label>
@@ -308,23 +312,27 @@
           </select>
         </div>
       </div>
+
       <div class="subsection">
-        <div class="subsection-title">Charge to customer</div>
+        <div class="subsection-title">On-site contact</div>
         <div class="field-row">
           <div class="field">
-            <label for="job-charge-rate">Rate</label>
-            <select id="job-charge-rate">
-              <option value="">— Custom / none —</option>
-            </select>
+            <label for="job-onsite-name">Name</label>
+            <input id="job-onsite-name" type="text">
           </div>
           <div class="field">
-            <label for="job-charge-amount">Amount charged</label>
-            <input id="job-charge-amount" type="number" step="0.01" min="0" placeholder="0.00">
+            <label for="job-onsite-phone">Number</label>
+            <input id="job-onsite-phone" type="text">
           </div>
         </div>
+        <div class="field" style="margin-bottom:0;">
+          <label for="job-onsite-email">Email</label>
+          <input id="job-onsite-email" type="email">
+        </div>
       </div>
+
       <div class="subsection">
-        <div class="subsection-title">Site address</div>
+        <div class="subsection-title">Site address (being decommissioned)</div>
         <div class="field">
           <label for="job-site-line1">Address line 1</label>
           <input id="job-site-line1" type="text">
@@ -354,30 +362,72 @@
           </div>
         </div>
       </div>
-      <div class="field-row">
+
+      <div class="field checkbox-field">
+        <label><input type="checkbox" id="job-has-move-to"> This job also includes moving to a new site</label>
+      </div>
+
+      <div class="subsection" id="job-move-to-section" hidden>
+        <div class="subsection-title">Moving to</div>
         <div class="field">
-          <label for="job-date">Date</label>
-          <input id="job-date" type="date" required>
+          <label for="job-moveto-line1">Address line 1</label>
+          <input id="job-moveto-line1" type="text">
         </div>
-        <div class="field-row" style="grid-template-columns:1fr 1fr;">
+        <div class="field">
+          <label for="job-moveto-line2">Address line 2</label>
+          <input id="job-moveto-line2" type="text">
+        </div>
+        <div class="field-row">
           <div class="field">
-            <label for="job-start-time">Start</label>
-            <input id="job-start-time" type="time" required>
+            <label for="job-moveto-town">Town</label>
+            <input id="job-moveto-town" type="text">
           </div>
           <div class="field">
-            <label for="job-end-time">End</label>
-            <input id="job-end-time" type="time">
+            <label for="job-moveto-county">County</label>
+            <input id="job-moveto-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="job-moveto-postcode">Postcode</label>
+            <input id="job-moveto-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="job-moveto-country">Country</label>
+            <input id="job-moveto-country" type="text">
           </div>
         </div>
       </div>
+
+      <div class="subsection">
+        <div class="subsection-title">Site foreman</div>
+        <div class="field-row">
+          <div class="field">
+            <label for="job-foreman-name">Name</label>
+            <input id="job-foreman-name" type="text">
+          </div>
+          <div class="field">
+            <label for="job-foreman-phone">Number</label>
+            <input id="job-foreman-phone" type="text">
+          </div>
+        </div>
+      </div>
+
       <div class="field">
         <label for="job-po">PO / reference (optional)</label>
         <input id="job-po" type="text">
       </div>
+
       <div class="subsection">
-        <div class="subsection-title">Assign contractor(s) &amp; their cost</div>
-        <div class="engineer-picker" id="job-engineer-picker"></div>
+        <div class="subsection-title">Booking lines</div>
+        <div id="job-booking-lines"></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="job-add-line">+ Add booking line</button>
         <div class="profit-line" id="job-profit-line">Estimated profit: —</div>
+      </div>
+
+      <div class="field">
+        <label for="job-description">Job description</label>
+        <textarea id="job-description" rows="3"></textarea>
       </div>
       <div class="field">
         <label for="job-notes">Notes</label>
