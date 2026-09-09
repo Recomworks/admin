@@ -202,6 +202,33 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .invoice-row .invoice-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .invoice-row .invoice-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .invoices-empty { font-size: 13px; color: var(--muted); padding: 4px 0; }
+
+/* Engineer picker with per-row cost input */
+.engineer-picker { max-height: 240px; }
+.engineer-picker-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 400; font-size: 14px; }
+.engineer-picker-row label { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 0; flex: 1; min-width: 0; }
+.engineer-picker-row label input { width: auto; }
+.engineer-cost-input { width: 100px !important; flex-shrink: 0; padding: 6px 8px !important; font-size: 13.5px !important; }
+.profit-line { margin-top: 12px; font-size: 14px; font-weight: 700; color: var(--deep); }
+.profit-line.negative { color: var(--red); }
+
+/* Payment status badges */
+.badge.status-unpaid { background: #FDECEC; color: var(--red); }
+.badge.status-invoice_received { background: #FDF3E0; color: var(--amber); }
+.badge.status-paid { background: #E4F5EA; color: var(--green); }
+
+/* Reports */
+.report-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.report-tab {
+  background: #fff; border: 1.5px solid var(--line); border-radius: 7px; padding: 9px 16px;
+  font-size: 14px; font-weight: 600; color: var(--muted);
+}
+.report-tab.active { background: var(--deep); color: #fff; border-color: var(--deep); }
+.report-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 20px; }
+.report-summary .stat-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 4px; }
+.report-summary .stat-value { font-size: 22px; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+.profit-positive { color: var(--green); }
+.profit-negative { color: var(--red); }
 .loading-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); animation: pulse 1s infinite ease-in-out; }
 @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
 
