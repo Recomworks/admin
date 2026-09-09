@@ -77,6 +77,9 @@
     <button class="nav-item" data-view="jobs">Jobs</button>
     <button class="nav-item" data-view="customers">Customers</button>
     <button class="nav-item" data-view="engineers">Contractors</button>
+    <button class="nav-item" data-view="payments">Payments</button>
+    <button class="nav-item" data-view="reports">Reports</button>
+    <button class="nav-item" data-view="rates">Rates</button>
     <div class="sidebar-spacer"></div>
     <div class="sidebar-foot">
       <div id="sidebar-user-email" style="margin-bottom:8px; word-break:break-all;"></div>
@@ -116,7 +119,7 @@
         <div style="overflow-x:auto;">
           <table class="data-table" id="jobs-table">
             <thead>
-              <tr><th>Date</th><th>Customer</th><th>Service</th><th>Site</th><th>Engineer(s)</th><th>Status</th><th></th></tr>
+              <tr><th>Date</th><th>Customer</th><th>Service</th><th>Site</th><th>Engineer(s)</th><th>Status</th><th>Profit</th><th></th></tr>
             </thead>
             <tbody id="jobs-tbody"></tbody>
           </table>
@@ -158,6 +161,98 @@
           </table>
         </div>
         <div class="empty-state" id="engineers-empty" hidden>No contractors added yet.</div>
+      </div>
+    </section>
+
+    <!-- Payments view -->
+    <section id="view-payments" hidden>
+      <div class="main-head">
+        <h1>Payments</h1>
+      </div>
+      <div class="search-bar" style="max-width:none; display:flex; gap:10px; flex-wrap:wrap;">
+        <select id="payments-status-filter" style="max-width:220px;">
+          <option value="">All statuses</option>
+          <option value="unpaid">Unpaid</option>
+          <option value="invoice_received">Invoice received</option>
+          <option value="paid">Paid</option>
+        </select>
+        <input type="text" id="payments-search" placeholder="Search engineer or customer..." style="max-width:280px;">
+      </div>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="payments-table">
+            <thead><tr><th>Date</th><th>Customer</th><th>Job</th><th>Engineer</th><th>Cost</th><th>Status</th><th></th></tr></thead>
+            <tbody id="payments-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="payments-empty" hidden>No contractor assignments yet.</div>
+      </div>
+    </section>
+
+    <!-- Reports view -->
+    <section id="view-reports" hidden>
+      <div class="main-head">
+        <h1>Reports</h1>
+      </div>
+      <div class="report-tabs">
+        <button class="report-tab active" data-report="profit">Profit by job</button>
+        <button class="report-tab" data-report="usage">Contractor usage</button>
+      </div>
+      <div class="search-bar" style="max-width:none; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <label style="font-weight:600; font-size:13px; margin:0;">From <input type="date" id="report-from" style="width:auto; display:inline-block;"></label>
+        <label style="font-weight:600; font-size:13px; margin:0;">To <input type="date" id="report-to" style="width:auto; display:inline-block;"></label>
+        <button class="btn btn-ghost btn-sm" id="report-this-month" type="button">This month</button>
+        <button class="btn btn-ghost btn-sm" id="report-clear" type="button">All time</button>
+      </div>
+
+      <div id="report-profit">
+        <div class="panel" style="padding:16px 20px; margin-bottom:18px;">
+          <div class="report-summary" id="report-profit-summary"></div>
+        </div>
+        <div class="panel">
+          <div style="overflow-x:auto;">
+            <table class="data-table" id="report-profit-table">
+              <thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Charged</th><th>Engineer cost</th><th>Profit</th><th>Margin</th></tr></thead>
+              <tbody id="report-profit-tbody"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="report-profit-empty" hidden>No jobs in this range.</div>
+        </div>
+      </div>
+
+      <div id="report-usage" hidden>
+        <div class="panel">
+          <div style="overflow-x:auto;">
+            <table class="data-table" id="report-usage-table">
+              <thead><tr><th>Contractor</th><th>Jobs</th><th>Total cost</th><th>Paid</th><th>Outstanding</th></tr></thead>
+              <tbody id="report-usage-tbody"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="report-usage-empty" hidden>No contractor assignments in this range.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Rates admin view -->
+    <section id="view-rates" hidden>
+      <div class="main-head">
+        <h1>Rates</h1>
+        <button class="btn btn-primary" id="btn-new-rate">+ New rate</button>
+      </div>
+      <p style="color:var(--muted); font-size:14px; margin-bottom:18px; max-width:640px;">
+        The prices you charge customers. Add one entry per rate you use (e.g.
+        "Senior Engineer" £200/day, "Standard Engineer" £165/day) — these
+        show up as a picker when you book a job, and the profit on each job
+        is calculated against whatever you assign the contractor(s) for.
+      </p>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="rates-table">
+            <thead><tr><th>Name</th><th>Amount</th><th>Status</th><th></th></tr></thead>
+            <tbody id="rates-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="rates-empty" hidden>No rates set up yet.</div>
       </div>
     </section>
 
@@ -214,6 +309,21 @@
         </div>
       </div>
       <div class="subsection">
+        <div class="subsection-title">Charge to customer</div>
+        <div class="field-row">
+          <div class="field">
+            <label for="job-charge-rate">Rate</label>
+            <select id="job-charge-rate">
+              <option value="">— Custom / none —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="job-charge-amount">Amount charged</label>
+            <input id="job-charge-amount" type="number" step="0.01" min="0" placeholder="0.00">
+          </div>
+        </div>
+      </div>
+      <div class="subsection">
         <div class="subsection-title">Site address</div>
         <div class="field">
           <label for="job-site-line1">Address line 1</label>
@@ -264,9 +374,10 @@
         <label for="job-po">PO / reference (optional)</label>
         <input id="job-po" type="text">
       </div>
-      <div class="field">
-        <label>Assign contractor(s)</label>
+      <div class="subsection">
+        <div class="subsection-title">Assign contractor(s) &amp; their cost</div>
         <div class="engineer-picker" id="job-engineer-picker"></div>
+        <div class="profit-line" id="job-profit-line">Estimated profit: —</div>
       </div>
       <div class="field">
         <label for="job-notes">Notes</label>
@@ -473,6 +584,48 @@
         <div class="modal-actions-right">
           <button class="btn btn-ghost" type="button" data-close="modal-engineer">Cancel</button>
           <button class="btn btn-primary" type="submit">Save contractor</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Charge rate create/edit -->
+<div class="modal-overlay" id="modal-rate" hidden>
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-head">
+      <h2 id="rate-modal-title">New rate</h2>
+      <button class="modal-close" data-close="modal-rate">&times;</button>
+    </div>
+    <form id="form-rate">
+      <input type="hidden" id="rate-id">
+      <div class="field">
+        <label for="rate-name">Name</label>
+        <input id="rate-name" type="text" required placeholder="e.g. Senior Engineer">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="rate-amount">Amount</label>
+          <input id="rate-amount" type="number" step="0.01" min="0" required placeholder="0.00">
+        </div>
+        <div class="field">
+          <label for="rate-type">Per</label>
+          <select id="rate-type">
+            <option value="day">Day</option>
+            <option value="hour">Hour</option>
+            <option value="fixed">Fixed</option>
+          </select>
+        </div>
+      </div>
+      <div class="field checkbox-row">
+        <input id="rate-active" type="checkbox" checked style="width:auto;">
+        <label for="rate-active" style="margin:0;">Active (shows up when booking a job)</label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger btn-sm" type="button" id="rate-delete" hidden>Delete rate</button>
+        <div class="modal-actions-right">
+          <button class="btn btn-ghost" type="button" data-close="modal-rate">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save rate</button>
         </div>
       </div>
     </form>
