@@ -1,12 +1,12 @@
 (function () {
   'use strict';
-
+ 
   var cfg = window.RECOMWORKS_CONFIG || {};
   var sb = null;
   if (window.supabase && cfg.SUPABASE_URL && cfg.SUPABASE_URL.indexOf('YOUR_') !== 0) {
     sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
   }
-
+ 
   // ── tiny helpers ──────────────────────────────────────────────
   function $(id) { return document.getElementById(id); }
   function show(el) { el.hidden = false; }
@@ -32,7 +32,7 @@
   function shortDate(d) {
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   }
-
+ 
   if (!sb) {
     document.addEventListener('DOMContentLoaded', function () {
       $('login-error').textContent = 'This admin system is not connected to a database yet. ' +
@@ -42,7 +42,7 @@
     });
     return;
   }
-
+ 
   // ── state ─────────────────────────────────────────────────────
   var state = {
     pendingFactorId: null,
@@ -52,28 +52,28 @@
     calMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     currentView: 'calendar'
   };
-
+ 
   // ── auth flow ─────────────────────────────────────────────────
   function authError(el, err) {
     el.textContent = (err && err.message) ? err.message : 'Something went wrong. Please try again.';
     show(el);
   }
-
+ 
   function showAuthCard(name) {
     ['card-login', 'card-mfa-challenge', 'card-mfa-enroll'].forEach(function (id) { hide($(id)); });
     show($(name));
   }
-
+ 
   async function routeAfterSession() {
     var sessionRes = await sb.auth.getSession();
     var session = sessionRes.data.session;
     if (!session) { showAuthCard('card-login'); return; }
-
+ 
     var aalRes = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
     if (aalRes.error) { showAuthCard('card-login'); return; }
     var currentLevel = aalRes.data.currentLevel;
     var nextLevel = aalRes.data.nextLevel;
-
+ 
     if (currentLevel === 'aal2') {
       enterApp(session);
     } else if (nextLevel === 'aal2') {
@@ -90,13 +90,13 @@
       startEnrollment();
     }
   }
-
+ 
   async function startEnrollment() {
     showAuthCard('card-mfa-enroll');
     $('enroll-qr-box').innerHTML = '<span class="loading-dot"></span>';
     $('enroll-secret').textContent = '';
     hide($('enroll-error'));
-
+ 
     // Clean up any leftover unverified factor from an abandoned earlier
     // setup attempt (e.g. the page was closed/reloaded mid-QR-scan) —
     // Supabase refuses a same-name enroll while one is still sitting there.
@@ -105,8 +105,15 @@
     for (var i = 0; i < stale.length; i++) {
       await sb.auth.mfa.unenroll({ factorId: stale[i].id });
     }
-
-    var res = await sb.auth.mfa.enroll({ factorType: 'totp' });
+ 
+    // Explicitly name the issuer so authenticator apps show "Recomworks Ltd -
+    // Admin" instead of defaulting to the Supabase project's Site URL
+    // (which shows up as "localhost:3000" until that's changed too).
+    var res = await sb.auth.mfa.enroll({
+      factorType: 'totp',
+      issuer: 'Recomworks Ltd - Admin',
+      friendlyName: 'recomworks-admin-' + Date.now()
+    });
     if (res.error) { authError($('enroll-error'), res.error); return; }
     state.pendingFactorId = res.data.id;
     // Build the <img> via the DOM rather than an HTML string: Supabase's
@@ -120,7 +127,7 @@
     $('enroll-qr-box').appendChild(qrImg);
     $('enroll-secret').textContent = res.data.totp.secret;
   }
-
+ 
   $('form-login').addEventListener('submit', async function (e) {
     e.preventDefault();
     hide($('login-error'));
@@ -132,7 +139,7 @@
     if (res.error) { authError($('login-error'), res.error); return; }
     routeAfterSession();
   });
-
+ 
   $('form-challenge').addEventListener('submit', async function (e) {
     e.preventDefault();
     hide($('challenge-error'));
@@ -142,12 +149,12 @@
     $('challenge-code').value = '';
     routeAfterSession();
   });
-
+ 
   $('btn-cancel-challenge').addEventListener('click', async function () {
     await sb.auth.signOut();
     showAuthCard('card-login');
   });
-
+ 
   $('form-enroll').addEventListener('submit', async function (e) {
     e.preventDefault();
     hide($('enroll-error'));
@@ -158,12 +165,12 @@
     toast('Two-factor authentication set up.');
     routeAfterSession();
   });
-
+ 
   $('btn-sign-out').addEventListener('click', async function () {
     await sb.auth.signOut();
     location.reload();
   });
-
+ 
   function enterApp(session) {
     hide($('auth-wrap'));
     $('auth-wrap').style.display = 'none';
@@ -171,7 +178,7 @@
     $('app-shell').classList.add('visible');
     loadAll();
   }
-
+ 
   // ── view routing ──────────────────────────────────────────────
   document.querySelectorAll('.nav-item').forEach(function (btn) {
     btn.addEventListener('click', function () { switchView(btn.dataset.view); });
@@ -185,7 +192,7 @@
       $('view-' + v).hidden = (v !== name);
     });
   }
-
+ 
   // ── modal helpers ─────────────────────────────────────────────
   document.querySelectorAll('[data-close]').forEach(function (btn) {
     btn.addEventListener('click', function () { hide($(btn.dataset.close)); });
@@ -193,7 +200,7 @@
   document.querySelectorAll('.modal-overlay').forEach(function (ov) {
     ov.addEventListener('click', function (e) { if (e.target === ov) hide(ov); });
   });
-
+ 
   // ── data loading ──────────────────────────────────────────────
   async function loadAll() {
     await Promise.all([loadCustomers(), loadEngineers()]);
@@ -203,19 +210,19 @@
     renderCustomersTable();
     renderEngineersTable();
   }
-
+ 
   async function loadCustomers() {
     var res = await sb.from('customers').select('*').order('company_name');
     if (res.error) { toast('Could not load customers: ' + res.error.message, true); return; }
     state.customers = res.data || [];
   }
-
+ 
   async function loadEngineers() {
     var res = await sb.from('engineers').select('*').order('name');
     if (res.error) { toast('Could not load contractors: ' + res.error.message, true); return; }
     state.engineers = res.data || [];
   }
-
+ 
   async function loadJobs() {
     var res = await sb.from('jobs').select('*, job_engineers(engineer_id)').order('start_at');
     if (res.error) { toast('Could not load jobs: ' + res.error.message, true); return; }
@@ -224,7 +231,7 @@
       return j;
     });
   }
-
+ 
   function customerName(id) {
     var c = state.customers.find(function (x) { return x.id === id; });
     return c ? c.company_name : '—';
@@ -235,7 +242,7 @@
       return e ? e.name : null;
     }).filter(Boolean);
   }
-
+ 
   // ── calendar ──────────────────────────────────────────────────
   var WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   (function initWeekdayRow() {
@@ -243,7 +250,7 @@
       return '<div class="cal-weekday">' + d + '</div>';
     }).join('');
   })();
-
+ 
   $('cal-prev').addEventListener('click', function () { shiftMonth(-1); });
   $('cal-next').addEventListener('click', function () { shiftMonth(1); });
   $('cal-today').addEventListener('click', function () {
@@ -254,23 +261,23 @@
     state.calMonth = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth() + delta, 1);
     renderCalendar();
   }
-
+ 
   function renderCalendar() {
     var y = state.calMonth.getFullYear(), m = state.calMonth.getMonth();
     $('cal-month-label').textContent = state.calMonth.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-
+ 
     var firstOfMonth = new Date(y, m, 1);
     var startOffset = (firstOfMonth.getDay() + 6) % 7; // Monday = 0
     var gridStart = new Date(y, m, 1 - startOffset);
     var today = new Date();
     var todayStr = fmtDate(today);
-
+ 
     var jobsByDay = {};
     state.jobs.forEach(function (j) {
       var key = fmtDate(new Date(j.start_at));
       (jobsByDay[key] = jobsByDay[key] || []).push(j);
     });
-
+ 
     var html = '';
     for (var i = 0; i < 42; i++) {
       var d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
@@ -286,12 +293,12 @@
         '<div class="day-num">' + d.getDate() + '</div>' + chips + more + '</div>';
     }
     $('cal-grid').innerHTML = html;
-
+ 
     document.querySelectorAll('.cal-day').forEach(function (el) {
       el.addEventListener('click', function () { openDayModal(el.dataset.date); });
     });
   }
-
+ 
   function openDayModal(dateStr) {
     var d = new Date(dateStr + 'T00:00:00');
     $('day-modal-title').textContent = friendlyDate(d);
@@ -323,7 +330,7 @@
     };
     show($('modal-day'));
   }
-
+ 
   // ── jobs table ────────────────────────────────────────────────
   function renderJobsTable() {
     var sorted = state.jobs.slice().sort(function (a, b) { return b.start_at.localeCompare(a.start_at); });
@@ -354,7 +361,7 @@
       });
     });
   }
-
+ 
   function emailContractorsForJob(job) {
     var engs = state.engineers.filter(function (e) { return (job.engineerIds || []).indexOf(e.id) !== -1 && e.email; });
     if (!engs.length) { toast('No contractor with an email address is assigned to this job yet.', true); return; }
@@ -378,28 +385,28 @@
       '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(lines.join('\n'));
     window.location.href = mailto;
   }
-
+ 
   // ── job modal ─────────────────────────────────────────────────
   $('btn-new-job-cal').addEventListener('click', function () { openJobModal(null); });
   $('btn-new-job-list').addEventListener('click', function () { openJobModal(null); });
-
+ 
   function openJobModal(job, presetDate) {
     var form = $('form-job');
     form.reset();
     $('job-id').value = job ? job.id : '';
     $('job-modal-title').textContent = job ? 'Edit job' : 'New job';
     $('job-delete').hidden = !job;
-
+ 
     var customerSel = $('job-customer');
     customerSel.innerHTML = state.customers.map(function (c) {
       return '<option value="' + c.id + '">' + esc(c.company_name) + '</option>';
     }).join('') || '<option value="">Add a customer first</option>';
-
+ 
     var picker = $('job-engineer-picker');
     picker.innerHTML = state.engineers.map(function (e) {
       return '<label><input type="checkbox" value="' + e.id + '"> ' + esc(e.name) + (e.active ? '' : ' (inactive)') + '</label>';
     }).join('') || '<p style="font-size:13px; color:var(--muted); margin:0;">Add a contractor first.</p>';
-
+ 
     if (job) {
       customerSel.value = job.customer_id || '';
       $('job-service').value = job.service_type || 'IT Relocations';
@@ -421,7 +428,7 @@
     }
     show($('modal-job'));
   }
-
+ 
   $('form-job').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('job-id').value;
@@ -440,7 +447,7 @@
       updated_at: new Date().toISOString()
     };
     var engineerIds = Array.from($('job-engineer-picker').querySelectorAll('input:checked')).map(function (cb) { return cb.value; });
-
+ 
     var jobId = id;
     if (id) {
       var res = await sb.from('jobs').update(payload).eq('id', id);
@@ -450,7 +457,7 @@
       if (ins.error) { toast('Could not save job: ' + ins.error.message, true); return; }
       jobId = ins.data.id;
     }
-
+ 
     var delRes = await sb.from('job_engineers').delete().eq('job_id', jobId);
     if (delRes.error) { toast('Could not update contractor assignment: ' + delRes.error.message, true); return; }
     if (engineerIds.length) {
@@ -458,13 +465,13 @@
       var insEng = await sb.from('job_engineers').insert(rows);
       if (insEng.error) { toast('Could not assign contractors: ' + insEng.error.message, true); return; }
     }
-
+ 
     hide($('modal-job'));
     toast('Job saved.');
     await loadJobs();
     renderCalendar(); renderJobsTable();
   });
-
+ 
   $('job-delete').addEventListener('click', async function () {
     var id = $('job-id').value;
     if (!id || !confirm('Delete this job? This cannot be undone.')) return;
@@ -475,7 +482,7 @@
     await loadJobs();
     renderCalendar(); renderJobsTable();
   });
-
+ 
   // ── customers ─────────────────────────────────────────────────
   function renderCustomersTable() {
     var q = ($('customer-search').value || '').toLowerCase();
@@ -496,7 +503,7 @@
   }
   $('customer-search').addEventListener('input', renderCustomersTable);
   $('btn-new-customer').addEventListener('click', function () { openCustomerModal(null); });
-
+ 
   function openCustomerModal(c) {
     $('form-customer').reset();
     $('customer-id').value = c ? c.id : '';
@@ -510,7 +517,7 @@
     $('customer-notes').value = c ? (c.notes || '') : '';
     show($('modal-customer'));
   }
-
+ 
   $('form-customer').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('customer-id').value;
@@ -531,7 +538,7 @@
     await loadCustomers();
     renderCustomersTable(); renderCalendar(); renderJobsTable();
   });
-
+ 
   $('customer-delete').addEventListener('click', async function () {
     var id = $('customer-id').value;
     if (!id || !confirm('Delete this customer? Jobs linked to them will keep their history but lose the link.')) return;
@@ -542,7 +549,7 @@
     await loadCustomers();
     renderCustomersTable(); renderCalendar(); renderJobsTable();
   });
-
+ 
   // ── engineers ─────────────────────────────────────────────────
   function renderEngineersTable() {
     var q = ($('engineer-search').value || '').toLowerCase();
@@ -562,7 +569,7 @@
   }
   $('engineer-search').addEventListener('input', renderEngineersTable);
   $('btn-new-engineer').addEventListener('click', function () { openEngineerModal(null); });
-
+ 
   function openEngineerModal(e) {
     $('form-engineer').reset();
     $('engineer-id').value = e ? e.id : '';
@@ -575,7 +582,7 @@
     $('engineer-active').checked = e ? !!e.active : true;
     show($('modal-engineer'));
   }
-
+ 
   $('form-engineer').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('engineer-id').value;
@@ -595,7 +602,7 @@
     await loadEngineers();
     renderEngineersTable(); renderCalendar(); renderJobsTable();
   });
-
+ 
   $('engineer-delete').addEventListener('click', async function () {
     var id = $('engineer-id').value;
     if (!id || !confirm('Delete this contractor?')) return;
@@ -606,7 +613,7 @@
     await loadEngineers();
     renderEngineersTable(); renderCalendar(); renderJobsTable();
   });
-
+ 
   // ── boot ──────────────────────────────────────────────────────
   sb.auth.onAuthStateChange(function (event) {
     if (event === 'SIGNED_OUT') {
@@ -616,6 +623,6 @@
       showAuthCard('card-login');
     }
   });
-
+ 
   routeAfterSession();
 })();
