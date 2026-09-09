@@ -76,6 +76,7 @@
     <button class="nav-item active" data-view="calendar">Calendar</button>
     <button class="nav-item" data-view="jobs">Jobs</button>
     <button class="nav-item" data-view="customers">Customers</button>
+    <button class="nav-item" data-view="clients">Clients</button>
     <button class="nav-item" data-view="engineers">Contractors</button>
     <button class="nav-item" data-view="payments">Payments</button>
     <button class="nav-item" data-view="reports">Reports</button>
@@ -138,11 +139,29 @@
       <div class="panel">
         <div style="overflow-x:auto;">
           <table class="data-table" id="customers-table">
-            <thead><tr><th>Company</th><th>Sub-client of</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+            <thead><tr><th>Company</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
             <tbody id="customers-tbody"></tbody>
           </table>
         </div>
         <div class="empty-state" id="customers-empty" hidden>No customers yet.</div>
+      </div>
+    </section>
+
+    <!-- Clients view -->
+    <section id="view-clients" hidden>
+      <div class="main-head">
+        <h1>Clients</h1>
+        <button class="btn btn-primary" id="btn-new-client">+ New client</button>
+      </div>
+      <div class="search-bar"><input type="text" id="client-search" placeholder="Search clients..."></div>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="clients-table">
+            <thead><tr><th>Company</th><th>Customer</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+            <tbody id="clients-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="clients-empty" hidden>No clients yet.</div>
       </div>
     </section>
 
@@ -475,11 +494,9 @@
         <label for="customer-company">Company name</label>
         <input id="customer-company" type="text" required>
       </div>
-      <div class="field">
-        <label for="customer-parent">Sub-client of (optional)</label>
-        <select id="customer-parent">
-          <option value="">— None: this is a main customer —</option>
-        </select>
+      <div class="field" id="customer-parent-field" hidden>
+        <label for="customer-parent">Customer</label>
+        <select id="customer-parent"></select>
       </div>
       <div class="subsection">
         <div class="subsection-title">Logo</div>
