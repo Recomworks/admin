@@ -306,8 +306,12 @@
         <select id="job-customer" required></select>
       </div>
       <div class="field">
-        <label for="job-client-name">Client name</label>
-        <input id="job-client-name" type="text" placeholder="e.g. Insight Hub">
+        <label for="job-client">Client</label>
+        <select id="job-client"><option value="">— No client (book directly against the customer) —</option></select>
+      </div>
+      <div class="field">
+        <label for="job-client-new">Or add a new client</label>
+        <input id="job-client-new" type="text" placeholder="e.g. Insight Hub">
       </div>
       <div class="field-row">
         <div class="field">
@@ -560,6 +564,71 @@
           </div>
         </div>
       </div>
+      <div class="subsection">
+        <div class="subsection-title">Site being decommissioned (optional)</div>
+        <p style="font-size:12.5px; color:var(--muted); margin:-4px 0 12px;">Saved here so it's remembered next time — a new job for this client pre-fills from it automatically.</p>
+        <div class="field">
+          <label for="customer-decomm-line1">Address line 1</label>
+          <input id="customer-decomm-line1" type="text">
+        </div>
+        <div class="field">
+          <label for="customer-decomm-line2">Address line 2</label>
+          <input id="customer-decomm-line2" type="text">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-decomm-town">Town</label>
+            <input id="customer-decomm-town" type="text">
+          </div>
+          <div class="field">
+            <label for="customer-decomm-county">County</label>
+            <input id="customer-decomm-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-decomm-postcode">Postcode</label>
+            <input id="customer-decomm-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="customer-decomm-country">Country</label>
+            <input id="customer-decomm-country" type="text">
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-title">Moving to / new site (optional)</div>
+        <div class="field">
+          <label for="customer-newsite-line1">Address line 1</label>
+          <input id="customer-newsite-line1" type="text">
+        </div>
+        <div class="field">
+          <label for="customer-newsite-line2">Address line 2</label>
+          <input id="customer-newsite-line2" type="text">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-newsite-town">Town</label>
+            <input id="customer-newsite-town" type="text">
+          </div>
+          <div class="field">
+            <label for="customer-newsite-county">County</label>
+            <input id="customer-newsite-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-newsite-postcode">Postcode</label>
+            <input id="customer-newsite-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="customer-newsite-country">Country</label>
+            <input id="customer-newsite-country" type="text">
+          </div>
+        </div>
+      </div>
+
       <div class="field">
         <label for="customer-notes">Notes</label>
         <textarea id="customer-notes" rows="2"></textarea>
