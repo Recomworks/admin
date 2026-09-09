@@ -32,6 +32,25 @@
   function shortDate(d) {
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   }
+  // "mailto:" bodies are plain text only (no HTML), so real bold isn't
+  // possible there — this swaps A-Z/a-z/0-9 for their Unicode
+  // "Mathematical Bold" look-alike code points, which render visually
+  // bold in any mail client because they're just different characters,
+  // not formatting. Everything else (spaces, punctuation, &) passes
+  // through unchanged.
+  function boldify(s) {
+    return String(s == null ? '' : s).replace(/[A-Za-z0-9]/g, function (c) {
+      var code = c.charCodeAt(0);
+      if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D400 + (code - 65));       // A-Z
+      if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D41A + (code - 97));      // a-z
+      if (code >= 48 && code <= 57) return String.fromCodePoint(0x1D7CE + (code - 48));       // 0-9
+      return c;
+    });
+  }
+  function googleMapsLink(address) {
+    if (!address) return null;
+    return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
+  }
 
   // ── structured address helpers (shared by customers / engineers / job site) ──
   // `cols` maps the fixed field roles to the actual DB column names, since
@@ -389,6 +408,33 @@
     var last = new Date(dates[dates.length - 1] + 'T00:00:00');
     return shortDate(first) + ' – ' + shortDate(last);
   }
+  // Plain-text itinerary lines for the contractor email/ICS — one line per
+  // booking line (date + time + assigned engineer, no rate/cost — that's
+  // between us and the customer, not something to put in front of the
+  // contractor), with a blank line separating each distinct date so a
+  // multi-day job reads as clearly grouped blocks.
+  function groupedItineraryLines(job) {
+    if (job.bookingLines && job.bookingLines.length) {
+      var sorted = job.bookingLines.slice().sort(function (a, b) {
+        if (a.booking_date !== b.booking_date) return a.booking_date < b.booking_date ? -1 : 1;
+        return (a.start_time || '') < (b.start_time || '') ? -1 : 1;
+      });
+      var out = [];
+      var prevDate = null;
+      sorted.forEach(function (l) {
+        if (prevDate !== null && l.booking_date !== prevDate) out.push('');
+        prevDate = l.booking_date;
+        var d = new Date(l.booking_date + 'T00:00:00');
+        var timeRange = (l.start_time ? l.start_time.slice(0, 5) : '') + (l.end_time ? '–' + l.end_time.slice(0, 5) : '');
+        var eng = l.engineer_id ? engineerNames([l.engineer_id])[0] : null;
+        out.push(friendlyDate(d) + (timeRange ? ' ' + timeRange : '') + (eng ? ' — ' + eng : ''));
+      });
+      return out;
+    }
+    if (!job.start_at) return [];
+    var t = new Date(job.start_at);
+    return [friendlyDate(t) + ' ' + fmtTime(t) + (job.end_at ? '–' + fmtTime(new Date(job.end_at)) : '')];
+  }
 
   // ── calendar ──────────────────────────────────────────────────
   var WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -547,46 +593,126 @@
     });
   }
 
+  function jobEmailSubject(job, cust) {
+    var dates = jobBookingDates(job);
+    var custName = cust ? cust.company_name : 'Recomworks job';
+    var clientPart = job.client_name ? ' (' + job.client_name + ')' : '';
+    var datePart = dates.length ? ' — ' + shortDate(new Date(dates[0] + 'T00:00:00')) : '';
+    return 'Job — ' + custName + clientPart + ' - ' + (job.service_type || 'Recomworks job') + datePart;
+  }
+
+  function slugify(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'job';
+  }
+
+  // ── ICS calendar file (downloaded alongside the email — mailto: links
+  //    can't carry attachments, so this is a separate file the user then
+  //    attaches by hand) ────────────────────────────────────────────
+  function icsEscape(s) {
+    return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  }
+  function icsDateTime(dateStr, timeStr) {
+    var t = (timeStr || '00:00').slice(0, 5).replace(':', '');
+    return dateStr.replace(/-/g, '') + 'T' + t + '00';
+  }
+  function buildIcsForJob(job, cust) {
+    var descriptionLines = [
+      'Customer: ' + (cust ? cust.company_name : '—'),
+      job.client_name ? 'Client: ' + job.client_name : '',
+      'Service: ' + (job.service_type || '—'),
+      job.onsite_contact_name ? 'On-site contact: ' + job.onsite_contact_name + (job.onsite_contact_phone ? ' (' + job.onsite_contact_phone + ')' : '') : '',
+      job.site_foreman_name ? 'Site foreman: ' + job.site_foreman_name + (job.site_foreman_phone ? ' (' + job.site_foreman_phone + ')' : '') : '',
+      job.description ? 'Description: ' + job.description : ''
+    ].filter(Boolean).join('\n');
+
+    // One VEVENT per distinct date + time-slot, listing whichever
+    // engineer(s) are booked in for that slot.
+    var groups = [];
+    if (job.bookingLines && job.bookingLines.length) {
+      job.bookingLines.forEach(function (l) {
+        var key = l.booking_date + '|' + (l.start_time || '') + '|' + (l.end_time || '');
+        var g = groups.find(function (x) { return x.key === key; });
+        if (!g) { g = { key: key, date: l.booking_date, startTime: l.start_time, endTime: l.end_time, engineers: [] }; groups.push(g); }
+        if (l.engineer_id) { var name = engineerNames([l.engineer_id])[0]; if (name) g.engineers.push(name); }
+      });
+    } else if (job.start_at) {
+      groups.push({ key: 'legacy', date: fmtDate(new Date(job.start_at)), startTime: fmtTime(new Date(job.start_at)), endTime: job.end_at ? fmtTime(new Date(job.end_at)) : null, engineers: engineerNames(job.engineerIds) });
+    }
+
+    var stamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    var subject = jobEmailSubject(job, cust);
+    var events = groups.map(function (g, idx) {
+      var desc = descriptionLines + (g.engineers.length ? '\nEngineer(s): ' + g.engineers.join(', ') : '');
+      return [
+        'BEGIN:VEVENT',
+        'UID:' + job.id + '-' + idx + '@recomworks.co.uk',
+        'DTSTAMP:' + stamp,
+        'DTSTART:' + icsDateTime(g.date, g.startTime),
+        'DTEND:' + icsDateTime(g.date, g.endTime || g.startTime),
+        'SUMMARY:' + icsEscape(subject),
+        'LOCATION:' + icsEscape(job.site_address || ''),
+        'DESCRIPTION:' + icsEscape(desc),
+        'END:VEVENT'
+      ].join('\r\n');
+    });
+
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Recomworks//Admin//EN', 'CALSCALE:GREGORIAN']
+      .concat(events).concat(['END:VCALENDAR']).join('\r\n');
+  }
+  function downloadIcs(filename, content) {
+    var blob = new Blob([content], { type: 'text/calendar;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
   function emailContractorsForJob(job) {
     var engs = state.engineers.filter(function (e) { return (job.engineerIds || []).indexOf(e.id) !== -1 && e.email; });
     if (!engs.length) { toast('No contractor with an email address is assigned to this job yet.', true); return; }
     var cust = state.customers.find(function (c) { return c.id === job.customer_id; });
-    var dates = jobBookingDates(job);
-    var subject = 'Job — ' + (job.service_type || 'Recomworks job') + ' — ' + (dates.length ? shortDate(new Date(dates[0] + 'T00:00:00')) : '');
-    var itinerary;
-    if (job.bookingLines && job.bookingLines.length) {
-      itinerary = job.bookingLines.map(function (l) {
-        var d = new Date(l.booking_date + 'T00:00:00');
-        var timeRange = (l.start_time ? l.start_time.slice(0, 5) : '') + (l.end_time ? '–' + l.end_time.slice(0, 5) : '');
-        var eng = l.engineer_id ? engineerNames([l.engineer_id])[0] : null;
-        return '  ' + friendlyDate(d) + (timeRange ? ' ' + timeRange : '') +
-          (l.charge_rate_name ? ' — ' + l.charge_rate_name : '') + (eng ? ' — ' + eng : '');
-      }).join('\n');
-    } else {
-      var t = new Date(job.start_at);
-      itinerary = '  ' + friendlyDate(t) + ' ' + fmtTime(t) + (job.end_at ? '–' + fmtTime(new Date(job.end_at)) : '');
+    var subject = jobEmailSubject(job, cust);
+
+    var siteMapsLink = googleMapsLink(job.site_address);
+    var moveToAddress = job.has_move_to_address ? assembleAddress(job, JOB_MOVETO_ADDR_COLS) : null;
+    var moveToMapsLink = googleMapsLink(moveToAddress);
+
+    var out = [];
+    out.push('Job details from Recomworks:');
+    out.push('');
+    out.push(boldify('Customer:') + ' ' + (cust ? cust.company_name : '—'));
+    out.push('');
+    if (job.client_name) {
+      out.push(boldify('Client:') + ' ' + job.client_name);
+      out.push('');
     }
-    var lines = [
-      'Job details from Recomworks:',
-      '',
-      'Customer: ' + (cust ? cust.company_name : '—'),
-      job.client_name ? 'Client: ' + job.client_name : '',
-      'Service: ' + (job.service_type || '—'),
-      '',
-      'Booking:',
-      itinerary,
-      '',
-      'Site address: ' + (job.site_address || '—'),
-      job.has_move_to_address ? 'Moving to: ' + assembleAddress(job, JOB_MOVETO_ADDR_COLS) : '',
-      job.onsite_contact_name ? 'On-site contact: ' + job.onsite_contact_name + (job.onsite_contact_phone ? ' (' + job.onsite_contact_phone + ')' : '') : '',
-      job.site_foreman_name ? 'Site foreman: ' + job.site_foreman_name + (job.site_foreman_phone ? ' (' + job.site_foreman_phone + ')' : '') : '',
-      job.po_reference ? 'PO / reference: ' + job.po_reference : '',
-      '',
-      job.description ? 'Description: ' + job.description : '',
-      job.notes ? 'Notes: ' + job.notes : ''
-    ].filter(Boolean);
+    out.push(boldify('Site address:') + ' ' + (job.site_address || '—'));
+    if (siteMapsLink) out.push(boldify('Google Maps:') + ' ' + siteMapsLink);
+    if (moveToAddress) {
+      out.push(boldify('Moving to:') + ' ' + moveToAddress);
+      if (moveToMapsLink) out.push(boldify('Google Maps:') + ' ' + moveToMapsLink);
+    }
+    if (job.onsite_contact_name) out.push(boldify('On-site contact:') + ' ' + job.onsite_contact_name + (job.onsite_contact_phone ? ' (' + job.onsite_contact_phone + ')' : ''));
+    if (job.site_foreman_name) out.push(boldify('Site foreman:') + ' ' + job.site_foreman_name + (job.site_foreman_phone ? ' (' + job.site_foreman_phone + ')' : ''));
+    out.push('');
+    out.push(boldify('Service:') + ' ' + (job.service_type || '—'));
+    out.push('');
+    out.push(boldify('Booking:'));
+    out = out.concat(groupedItineraryLines(job));
+    if (job.po_reference) { out.push(''); out.push(boldify('PO / reference:') + ' ' + job.po_reference); }
+    if (job.description) { out.push(''); out.push(boldify('Description:') + ' ' + job.description); }
+    if (job.notes) { out.push(''); out.push(boldify('Notes:') + ' ' + job.notes); }
+
+    var icsFilename = slugify(cust ? cust.company_name : 'job') + '-' + (jobBookingDates(job)[0] || job.id) + '.ics';
+    downloadIcs(icsFilename, buildIcsForJob(job, cust));
+    toast('Calendar file downloaded — attach it to the email that opens (a plain email link can\'t attach files by itself).');
+
     var mailto = 'mailto:' + engs.map(function (e) { return e.email; }).join(',') +
-      '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(lines.join('\n'));
+      '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(out.join('\n'));
     window.location.href = mailto;
   }
 
