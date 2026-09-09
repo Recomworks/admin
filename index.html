@@ -135,7 +135,7 @@
       <div class="panel">
         <div style="overflow-x:auto;">
           <table class="data-table" id="customers-table">
-            <thead><tr><th>Company</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+            <thead><tr><th>Company</th><th>Sub-client of</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
             <tbody id="customers-tbody"></tbody>
           </table>
         </div>
@@ -153,7 +153,7 @@
       <div class="panel">
         <div style="overflow-x:auto;">
           <table class="data-table" id="engineers-table">
-            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Skills</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Skills</th><th>Rate</th><th>Status</th><th></th></tr></thead>
             <tbody id="engineers-tbody"></tbody>
           </table>
         </div>
@@ -213,9 +213,36 @@
           </select>
         </div>
       </div>
-      <div class="field">
-        <label for="job-site">Site address</label>
-        <input id="job-site" type="text" placeholder="Site address for this job">
+      <div class="subsection">
+        <div class="subsection-title">Site address</div>
+        <div class="field">
+          <label for="job-site-line1">Address line 1</label>
+          <input id="job-site-line1" type="text">
+        </div>
+        <div class="field">
+          <label for="job-site-line2">Address line 2</label>
+          <input id="job-site-line2" type="text">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="job-site-town">Town</label>
+            <input id="job-site-town" type="text">
+          </div>
+          <div class="field">
+            <label for="job-site-county">County</label>
+            <input id="job-site-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="job-site-postcode">Postcode</label>
+            <input id="job-site-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="job-site-country">Country</label>
+            <input id="job-site-country" type="text">
+          </div>
+        </div>
       </div>
       <div class="field-row">
         <div class="field">
@@ -269,23 +296,73 @@
         <label for="customer-company">Company name</label>
         <input id="customer-company" type="text" required>
       </div>
+      <div class="field">
+        <label for="customer-parent">Sub-client of (optional)</label>
+        <select id="customer-parent">
+          <option value="">— None: this is a main customer —</option>
+        </select>
+      </div>
+      <div class="subsection">
+        <div class="subsection-title">Logo</div>
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div class="logo-preview" id="customer-logo-preview"><span>No logo</span></div>
+          <div style="flex:1;">
+            <input id="customer-logo-file" type="file" accept="image/*">
+            <p id="customer-logo-hint" style="font-size:12.5px; color:var(--muted); margin-top:6px;">Save the customer first, then upload a logo.</p>
+            <button class="btn btn-ghost btn-sm" type="button" id="customer-logo-remove" hidden style="margin-top:8px;">Remove logo</button>
+          </div>
+        </div>
+      </div>
       <div class="field-row">
         <div class="field">
           <label for="customer-contact">Contact name</label>
           <input id="customer-contact" type="text">
         </div>
         <div class="field">
+          <label for="customer-contact-position">Contact position</label>
+          <input id="customer-contact-position" type="text" placeholder="e.g. Director">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
           <label for="customer-phone">Phone</label>
           <input id="customer-phone" type="tel">
         </div>
+        <div class="field">
+          <label for="customer-email">Email</label>
+          <input id="customer-email" type="email">
+        </div>
       </div>
-      <div class="field">
-        <label for="customer-email">Email</label>
-        <input id="customer-email" type="email">
-      </div>
-      <div class="field">
-        <label for="customer-address">Address</label>
-        <textarea id="customer-address" rows="2"></textarea>
+      <div class="subsection">
+        <div class="subsection-title">Address</div>
+        <div class="field">
+          <label for="customer-line1">Address line 1</label>
+          <input id="customer-line1" type="text">
+        </div>
+        <div class="field">
+          <label for="customer-line2">Address line 2</label>
+          <input id="customer-line2" type="text">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-town">Town</label>
+            <input id="customer-town" type="text">
+          </div>
+          <div class="field">
+            <label for="customer-county">County</label>
+            <input id="customer-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="customer-postcode">Postcode</label>
+            <input id="customer-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="customer-country">Country</label>
+            <input id="customer-country" type="text">
+          </div>
+        </div>
       </div>
       <div class="field">
         <label for="customer-notes">Notes</label>
@@ -325,6 +402,54 @@
           <input id="engineer-phone" type="tel">
         </div>
       </div>
+      <div class="subsection">
+        <div class="subsection-title">Address</div>
+        <div class="field">
+          <label for="engineer-line1">Address line 1</label>
+          <input id="engineer-line1" type="text">
+        </div>
+        <div class="field">
+          <label for="engineer-line2">Address line 2</label>
+          <input id="engineer-line2" type="text">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="engineer-town">Town</label>
+            <input id="engineer-town" type="text">
+          </div>
+          <div class="field">
+            <label for="engineer-county">County</label>
+            <input id="engineer-county" type="text">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="engineer-postcode">Postcode</label>
+            <input id="engineer-postcode" type="text">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="engineer-country">Country</label>
+            <input id="engineer-country" type="text">
+          </div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="engineer-utr">UTR number</label>
+          <input id="engineer-utr" type="text" placeholder="Unique Taxpayer Reference">
+        </div>
+        <div class="field">
+          <label for="engineer-rate">Rate</label>
+          <div style="display:flex; gap:8px;">
+            <input id="engineer-rate" type="number" step="0.01" min="0" placeholder="0.00">
+            <select id="engineer-rate-type" style="max-width:120px;">
+              <option value="day">Per day</option>
+              <option value="hour">Per hour</option>
+              <option value="fixed">Fixed</option>
+            </select>
+          </div>
+        </div>
+      </div>
       <div class="field">
         <label for="engineer-skills">Skills / notes</label>
         <textarea id="engineer-skills" rows="2"></textarea>
@@ -333,6 +458,16 @@
         <input id="engineer-active" type="checkbox" checked style="width:auto;">
         <label for="engineer-active" style="margin:0;">Active</label>
       </div>
+      <div class="subsection" id="engineer-invoices-section" hidden>
+        <div class="subsection-title">Invoices received from this contractor</div>
+        <div id="engineer-invoices-list"></div>
+        <div style="display:flex; gap:10px; align-items:flex-end; margin-top:10px; flex-wrap:wrap;">
+          <input id="engineer-invoice-file" type="file" accept=".pdf,.png,.jpg,.jpeg" style="flex:1; min-width:180px;">
+          <input id="engineer-invoice-amount" type="number" step="0.01" min="0" placeholder="Amount (optional)" style="max-width:150px;">
+          <button class="btn btn-ghost btn-sm" type="button" id="engineer-invoice-upload">Upload invoice</button>
+        </div>
+      </div>
+      <p id="engineer-invoices-hint" style="font-size:12.5px; color:var(--muted); margin:-4px 0 16px;">Save the contractor first, then you can upload invoices.</p>
       <div class="modal-actions">
         <button class="btn btn-danger btn-sm" type="button" id="engineer-delete" hidden>Delete contractor</button>
         <div class="modal-actions-right">
