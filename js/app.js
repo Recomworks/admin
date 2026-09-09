@@ -62,6 +62,7 @@
   var CUSTOMER_ADDR_COLS = { line1: 'address_line1', line2: 'address_line2', town: 'town', county: 'county', postcode: 'postcode', country: 'country' };
   var ENGINEER_ADDR_COLS = CUSTOMER_ADDR_COLS;
   var JOB_SITE_ADDR_COLS = { line1: 'site_address_line1', line2: 'site_address_line2', town: 'site_town', county: 'site_county', postcode: 'site_postcode', country: 'site_country' };
+  var JOB_MOVETO_ADDR_COLS = { line1: 'move_to_address_line1', line2: 'move_to_address_line2', town: 'move_to_town', county: 'move_to_county', postcode: 'move_to_postcode', country: 'move_to_country' };
 
   // ── Supabase Storage helper: short-lived signed URL for a private file ──
   async function signedUrl(bucket, path, seconds) {
@@ -90,11 +91,13 @@
     pendingFactorId: null,
     customers: [],
     engineers: [],
-    jobs: [],           // flat, each with .engineerIds/.engineerAssignments
+    jobs: [],           // flat, each with .bookingLines/.engineerIds
     chargeRates: [],
     calMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     currentView: 'calendar',
-    reportTab: 'profit'
+    reportTab: 'profit',
+    currentJobLines: [], // in-progress edit state for the open job modal's booking lines
+    jobLineSeq: 0        // local id counter for brand-new (unsaved) booking lines
   };
 
   // ── auth flow ─────────────────────────────────────────────────
@@ -277,11 +280,21 @@
   }
 
   async function loadJobs() {
-    var res = await sb.from('jobs').select('*, job_engineers(*)').order('start_at');
+    // job_engineers is also fetched purely so a job saved under the old
+    // single date/rate/engineer-picker model (before booking lines existed)
+    // can still be displayed and edited — openJobModal synthesizes a single
+    // booking line from it the first time such a job is reopened.
+    var res = await sb.from('jobs').select('*, job_booking_lines(*), job_engineers(*)').order('start_at');
     if (res.error) { toast('Could not load jobs: ' + res.error.message, true); return; }
     state.jobs = (res.data || []).map(function (j) {
+      j.bookingLines = (j.job_booking_lines || []).slice().sort(function (a, b) {
+        if (a.booking_date !== b.booking_date) return a.booking_date < b.booking_date ? -1 : 1;
+        return (a.start_time || '').localeCompare(b.start_time || '');
+      });
       j.engineerAssignments = j.job_engineers || [];
-      j.engineerIds = j.engineerAssignments.map(function (x) { return x.engineer_id; });
+      var idSet = {};
+      j.bookingLines.forEach(function (l) { if (l.engineer_id) idSet[l.engineer_id] = true; });
+      j.engineerIds = Object.keys(idSet);
       return j;
     });
   }
@@ -300,17 +313,35 @@
     return state.engineers.find(function (e) { return e.id === id; });
   }
 
-  // ── profit helpers ───────────────────────────────────────────────
+  // ── profit helpers (now summed across a job's booking lines — falls
+  //    back to the old single date/rate/engineer-picker fields for a job
+  //    that hasn't been resaved under the booking-lines model yet) ─────
+  function lineCost(line) {
+    var amount = line.cost_amount;
+    if (amount == null && line.engineer_id) { var e = engineerById(line.engineer_id); amount = e ? e.rate : null; }
+    return Number(amount) || 0;
+  }
   function jobEngineerCost(job) {
+    if (job.bookingLines && job.bookingLines.length) {
+      return job.bookingLines.reduce(function (sum, l) { return sum + lineCost(l); }, 0);
+    }
     return (job.engineerAssignments || []).reduce(function (sum, a) {
       var amount = a.cost_amount;
       if (amount == null) { var e = engineerById(a.engineer_id); amount = e ? e.rate : null; }
       return sum + (Number(amount) || 0);
     }, 0);
   }
+  function jobChargeTotal(job) {
+    if (job.bookingLines && job.bookingLines.length) {
+      return job.bookingLines.reduce(function (sum, l) { return sum + (Number(l.charge_amount) || 0); }, 0);
+    }
+    return Number(job.charge_amount) || 0;
+  }
   function jobProfit(job) {
-    if (job.charge_amount == null) return null;
-    return Number(job.charge_amount) - jobEngineerCost(job);
+    var hasLines = job.bookingLines && job.bookingLines.length;
+    var hasLegacy = job.charge_amount != null || (job.engineerAssignments && job.engineerAssignments.length);
+    if (!hasLines && !hasLegacy) return null;
+    return jobChargeTotal(job) - jobEngineerCost(job);
   }
   function money(n) {
     return '£' + Number(n || 0).toFixed(2);
@@ -319,6 +350,30 @@
     var p = jobProfit(job);
     if (p == null) return '<span style="color:var(--muted);">—</span>';
     return '<span class="' + (p < 0 ? 'profit-negative' : 'profit-positive') + '">' + money(p) + '</span>';
+  }
+
+  // ── booking-line date helpers ───────────────────────────────────
+  // Distinct sorted booking dates for a job (falls back to the legacy
+  // single start_at date for a job that hasn't been resaved yet).
+  function jobBookingDates(job) {
+    if (job.bookingLines && job.bookingLines.length) {
+      var seen = {};
+      var dates = [];
+      job.bookingLines.forEach(function (l) {
+        if (!seen[l.booking_date]) { seen[l.booking_date] = true; dates.push(l.booking_date); }
+      });
+      return dates.sort();
+    }
+    if (job.start_at) return [fmtDate(new Date(job.start_at))];
+    return [];
+  }
+  function jobDateRangeLabel(job) {
+    var dates = jobBookingDates(job);
+    if (!dates.length) return '—';
+    var first = new Date(dates[0] + 'T00:00:00');
+    if (dates.length === 1) return shortDate(first);
+    var last = new Date(dates[dates.length - 1] + 'T00:00:00');
+    return shortDate(first) + ' – ' + shortDate(last);
   }
 
   // ── calendar ──────────────────────────────────────────────────
@@ -350,10 +405,20 @@
     var today = new Date();
     var todayStr = fmtDate(today);
 
-    var jobsByDay = {};
+    // Each entry on the calendar is one booking line's own date (so a
+    // multi-day job shows up on every day it's actually booked) — a job
+    // saved before booking lines existed falls back to its old single
+    // start_at date so nothing disappears off the calendar.
+    var entriesByDay = {};
     state.jobs.forEach(function (j) {
-      var key = fmtDate(new Date(j.start_at));
-      (jobsByDay[key] = jobsByDay[key] || []).push(j);
+      if (j.bookingLines && j.bookingLines.length) {
+        j.bookingLines.forEach(function (l) {
+          (entriesByDay[l.booking_date] = entriesByDay[l.booking_date] || []).push({ job: j, line: l });
+        });
+      } else if (j.start_at) {
+        var key = fmtDate(new Date(j.start_at));
+        (entriesByDay[key] = entriesByDay[key] || []).push({ job: j, line: null });
+      }
     });
 
     var html = '';
@@ -361,12 +426,18 @@
       var d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
       var key = fmtDate(d);
       var inMonth = d.getMonth() === m;
-      var dayJobs = (jobsByDay[key] || []).slice().sort(function (a, b) { return a.start_at.localeCompare(b.start_at); });
-      var chips = dayJobs.slice(0, 3).map(function (j) {
-        var t = new Date(j.start_at);
-        return '<div class="job-chip status-' + j.status + '">' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ' ' + esc(customerName(j.customer_id)) + '</div>';
+      var dayEntries = (entriesByDay[key] || []).slice().sort(function (a, b) {
+        var at = a.line ? (a.line.start_time || '') : fmtTime(new Date(a.job.start_at));
+        var bt = b.line ? (b.line.start_time || '') : fmtTime(new Date(b.job.start_at));
+        return at.localeCompare(bt);
+      });
+      var chips = dayEntries.slice(0, 3).map(function (en) {
+        var j = en.job, l = en.line;
+        var timeLabel = l ? (l.start_time ? l.start_time.slice(0, 5) : '—') : fmtTime(new Date(j.start_at));
+        var rateLabel = l && l.charge_rate_name ? ' · ' + esc(l.charge_rate_name) : '';
+        return '<div class="job-chip status-' + j.status + '">' + timeLabel + ' ' + esc(j.client_name || customerName(j.customer_id)) + rateLabel + '</div>';
       }).join('');
-      var more = dayJobs.length > 3 ? '<div class="chip-more">+' + (dayJobs.length - 3) + ' more</div>' : '';
+      var more = dayEntries.length > 3 ? '<div class="chip-more">+' + (dayEntries.length - 3) + ' more</div>' : '';
       html += '<div class="cal-day' + (inMonth ? '' : ' out') + (key === todayStr ? ' today' : '') + '" data-date="' + key + '">' +
         '<div class="day-num">' + d.getDate() + '</div>' + chips + more + '</div>';
     }
@@ -380,20 +451,37 @@
   function openDayModal(dateStr) {
     var d = new Date(dateStr + 'T00:00:00');
     $('day-modal-title').textContent = friendlyDate(d);
-    var dayJobs = state.jobs.filter(function (j) { return fmtDate(new Date(j.start_at)) === dateStr; })
-      .sort(function (a, b) { return a.start_at.localeCompare(b.start_at); });
+    var dayEntries = [];
+    state.jobs.forEach(function (j) {
+      if (j.bookingLines && j.bookingLines.length) {
+        j.bookingLines.forEach(function (l) {
+          if (l.booking_date === dateStr) dayEntries.push({ job: j, line: l });
+        });
+      } else if (j.start_at && fmtDate(new Date(j.start_at)) === dateStr) {
+        dayEntries.push({ job: j, line: null });
+      }
+    });
+    dayEntries.sort(function (a, b) {
+      var at = a.line ? (a.line.start_time || '') : fmtTime(new Date(a.job.start_at));
+      var bt = b.line ? (b.line.start_time || '') : fmtTime(new Date(b.job.start_at));
+      return at.localeCompare(bt);
+    });
     var list = $('day-modal-list');
-    if (!dayJobs.length) {
+    if (!dayEntries.length) {
       list.innerHTML = '<p style="color:var(--muted); font-size:14px;">No jobs booked this day.</p>';
     } else {
-      list.innerHTML = dayJobs.map(function (j) {
-        var t = new Date(j.start_at);
-        var engs = engineerNames(j.engineerIds).join(', ') || 'Unassigned';
+      list.innerHTML = dayEntries.map(function (en) {
+        var j = en.job, l = en.line;
+        var timeLabel = l ? (l.start_time ? l.start_time.slice(0, 5) : '—') : fmtTime(new Date(j.start_at));
+        var eng = l ? (l.engineer_id ? engineerNames([l.engineer_id])[0] : null) : null;
+        var engLabel = l ? (eng || 'Unassigned') : (engineerNames(j.engineerIds).join(', ') || 'Unassigned');
+        var rateLabel = l && l.charge_rate_name ? l.charge_rate_name + (l.charge_amount != null ? ' (' + money(l.charge_amount) + ')' : '') : '';
         return '<div class="panel" style="padding:12px 14px; cursor:pointer;" data-job-id="' + j.id + '">' +
           '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">' +
-          '<strong style="font-size:14px;">' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ' — ' + esc(customerName(j.customer_id)) + '</strong>' +
+          '<strong style="font-size:14px;">' + timeLabel + ' — ' + esc(j.client_name || customerName(j.customer_id)) + '</strong>' +
           '<span class="badge status-' + j.status + '">' + j.status + '</span></div>' +
-          '<div style="font-size:13px; color:var(--muted); margin-top:4px;">' + esc(j.service_type || '') + ' · ' + esc(engs) + '</div></div>';
+          '<div style="font-size:13px; color:var(--muted); margin-top:4px;">' + esc(j.service_type || '') +
+          (rateLabel ? ' · ' + esc(rateLabel) : '') + ' · ' + esc(engLabel) + '</div></div>';
       }).join('');
       list.querySelectorAll('[data-job-id]').forEach(function (el) {
         el.addEventListener('click', function () {
@@ -411,14 +499,18 @@
 
   // ── jobs table ────────────────────────────────────────────────
   function renderJobsTable() {
-    var sorted = state.jobs.slice().sort(function (a, b) { return b.start_at.localeCompare(a.start_at); });
+    var sorted = state.jobs.slice().sort(function (a, b) {
+      var aKey = jobBookingDates(a)[0] || '';
+      var bKey = jobBookingDates(b)[0] || '';
+      return bKey.localeCompare(aKey);
+    });
     $('jobs-empty').hidden = sorted.length > 0;
     $('jobs-tbody').innerHTML = sorted.map(function (j) {
-      var t = new Date(j.start_at);
       var engs = engineerNames(j.engineerIds).join(', ') || '—';
       return '<tr data-job-id="' + j.id + '" style="cursor:pointer;">' +
-        '<td>' + shortDate(t) + ' ' + fmtTime(t) + '</td>' +
+        '<td>' + jobDateRangeLabel(j) + '</td>' +
         '<td>' + esc(customerName(j.customer_id)) + '</td>' +
+        '<td>' + esc(j.client_name || '—') + '</td>' +
         '<td>' + esc(j.service_type || '—') + '</td>' +
         '<td>' + esc(j.site_address || '—') + '</td>' +
         '<td>' + esc(engs) + '</td>' +
@@ -444,20 +536,39 @@
   function emailContractorsForJob(job) {
     var engs = state.engineers.filter(function (e) { return (job.engineerIds || []).indexOf(e.id) !== -1 && e.email; });
     if (!engs.length) { toast('No contractor with an email address is assigned to this job yet.', true); return; }
-    var t = new Date(job.start_at);
     var cust = state.customers.find(function (c) { return c.id === job.customer_id; });
-    var subject = 'Job — ' + (job.service_type || 'Recomworks job') + ' — ' + shortDate(t);
+    var dates = jobBookingDates(job);
+    var subject = 'Job — ' + (job.service_type || 'Recomworks job') + ' — ' + (dates.length ? shortDate(new Date(dates[0] + 'T00:00:00')) : '');
+    var itinerary;
+    if (job.bookingLines && job.bookingLines.length) {
+      itinerary = job.bookingLines.map(function (l) {
+        var d = new Date(l.booking_date + 'T00:00:00');
+        var timeRange = (l.start_time ? l.start_time.slice(0, 5) : '') + (l.end_time ? '–' + l.end_time.slice(0, 5) : '');
+        var eng = l.engineer_id ? engineerNames([l.engineer_id])[0] : null;
+        return '  ' + friendlyDate(d) + (timeRange ? ' ' + timeRange : '') +
+          (l.charge_rate_name ? ' — ' + l.charge_rate_name : '') + (eng ? ' — ' + eng : '');
+      }).join('\n');
+    } else {
+      var t = new Date(job.start_at);
+      itinerary = '  ' + friendlyDate(t) + ' ' + fmtTime(t) + (job.end_at ? '–' + fmtTime(new Date(job.end_at)) : '');
+    }
     var lines = [
       'Job details from Recomworks:',
       '',
       'Customer: ' + (cust ? cust.company_name : '—'),
+      job.client_name ? 'Client: ' + job.client_name : '',
       'Service: ' + (job.service_type || '—'),
-      'Date: ' + friendlyDate(t),
-      'Start time: ' + fmtTime(t),
-      job.end_at ? 'End time: ' + fmtTime(new Date(job.end_at)) : '',
+      '',
+      'Booking:',
+      itinerary,
+      '',
       'Site address: ' + (job.site_address || '—'),
+      job.has_move_to_address ? 'Moving to: ' + assembleAddress(job, JOB_MOVETO_ADDR_COLS) : '',
+      job.onsite_contact_name ? 'On-site contact: ' + job.onsite_contact_name + (job.onsite_contact_phone ? ' (' + job.onsite_contact_phone + ')' : '') : '',
+      job.site_foreman_name ? 'Site foreman: ' + job.site_foreman_name + (job.site_foreman_phone ? ' (' + job.site_foreman_phone + ')' : '') : '',
       job.po_reference ? 'PO / reference: ' + job.po_reference : '',
       '',
+      job.description ? 'Description: ' + job.description : '',
       job.notes ? 'Notes: ' + job.notes : ''
     ].filter(Boolean);
     var mailto = 'mailto:' + engs.map(function (e) { return e.email; }).join(',') +
@@ -469,36 +580,155 @@
   $('btn-new-job-cal').addEventListener('click', function () { openJobModal(null); });
   $('btn-new-job-list').addEventListener('click', function () { openJobModal(null); });
 
+  $('job-has-move-to').addEventListener('change', function () {
+    $('job-move-to-section').hidden = !this.checked;
+  });
+
+  // ── booking lines: repeatable date + time + rate + engineer rows ──
+  function blankBookingLine(defaultDate) {
+    state.jobLineSeq += 1;
+    return {
+      _key: 'new-' + state.jobLineSeq,
+      id: null,
+      booking_date: defaultDate || fmtDate(new Date()),
+      start_time: '09:00',
+      end_time: '',
+      charge_rate_id: '',
+      charge_rate_name: null,
+      charge_amount: null,
+      engineer_id: '',
+      cost_amount: null,
+      payment_status: 'unpaid',
+      invoice_received_at: null,
+      paid_at: null
+    };
+  }
+
   function updateJobProfitLine() {
-    var charge = Number($('job-charge-amount').value) || 0;
-    var cost = 0;
-    var anyChecked = false;
-    $('job-engineer-picker').querySelectorAll('.engineer-picker-row').forEach(function (row) {
-      var cb = row.querySelector('input[type=checkbox]');
-      if (cb && cb.checked) {
-        anyChecked = true;
-        cost += Number(row.querySelector('.engineer-cost-input').value) || 0;
-      }
+    var lines = state.currentJobLines;
+    var charge = 0, cost = 0;
+    lines.forEach(function (line) {
+      charge += Number(line.charge_amount) || 0;
+      var c = line.cost_amount;
+      if (c == null && line.engineer_id) { var e = engineerById(line.engineer_id); c = e ? e.rate : null; }
+      cost += Number(c) || 0;
     });
     var el = $('job-profit-line');
-    if (!$('job-charge-amount').value && !anyChecked) {
+    if (!lines.length) {
       el.textContent = 'Estimated profit: —';
       el.classList.remove('negative');
       return;
     }
     var profit = charge - cost;
-    el.textContent = 'Estimated profit: ' + money(profit) + ' (charging ' + money(charge) + ' − ' + money(cost) + ' contractor cost)';
+    el.textContent = 'Estimated profit: ' + money(profit) + ' (charging ' + money(charge) + ' − ' + money(cost) +
+      ' contractor cost across ' + lines.length + ' booking line' + (lines.length === 1 ? '' : 's') + ')';
     el.classList.toggle('negative', profit < 0);
   }
 
-  function applyChargeRate() {
-    var rateId = $('job-charge-rate').value;
-    var rate = state.chargeRates.find(function (r) { return r.id === rateId; });
-    if (rate) $('job-charge-amount').value = rate.amount;
+  function bookingLineCardHtml(line) {
+    var rateOptions = '<option value="">— Custom / none —</option>' + state.chargeRates.map(function (r) {
+      return '<option value="' + r.id + '"' + (line.charge_rate_id === r.id ? ' selected' : '') + '>' +
+        esc(r.name) + ' — ' + money(r.amount) + '/' + r.rate_type + (r.active ? '' : ' (inactive)') + '</option>';
+    }).join('');
+    var engOptions = '<option value="">— Unassigned —</option>' + state.engineers.map(function (e) {
+      return '<option value="' + e.id + '"' + (line.engineer_id === e.id ? ' selected' : '') + '>' +
+        esc(e.name) + (e.active ? '' : ' (inactive)') + '</option>';
+    }).join('');
+    var statusBadge = line.id ? ' <span class="badge status-' + (line.payment_status || 'unpaid') + '">' + paymentStatusLabel(line.payment_status || 'unpaid') + '</span>' : '';
+    return '<div class="booking-line-card" data-line-key="' + line._key + '">' +
+      '<div class="booking-line-head"><span class="booking-line-label">Booking line' + statusBadge + '</span>' +
+      '<button type="button" class="btn btn-ghost btn-sm booking-line-remove" data-remove-line="' + line._key + '">Remove</button></div>' +
+      '<div class="field-row" style="grid-template-columns:1fr 1fr 1fr;">' +
+      '<div class="field"><label>Date</label><input type="date" class="bl-date" value="' + esc(line.booking_date || '') + '" required></div>' +
+      '<div class="field"><label>Start</label><input type="time" class="bl-start" value="' + esc(line.start_time || '') + '"></div>' +
+      '<div class="field"><label>End</label><input type="time" class="bl-end" value="' + esc(line.end_time || '') + '"></div>' +
+      '</div>' +
+      '<div class="field-row">' +
+      '<div class="field"><label>Rate charged</label><select class="bl-rate">' + rateOptions + '</select></div>' +
+      '<div class="field"><label>Amount charged</label><input type="number" step="0.01" min="0" class="bl-amount" placeholder="0.00" value="' + (line.charge_amount != null ? line.charge_amount : '') + '"></div>' +
+      '</div>' +
+      '<div class="field-row">' +
+      '<div class="field"><label>Engineer</label><select class="bl-engineer">' + engOptions + '</select></div>' +
+      '<div class="field"><label>Engineer cost</label><input type="number" step="0.01" min="0" class="bl-cost" placeholder="Cost £" value="' + (line.cost_amount != null ? line.cost_amount : '') + '"></div>' +
+      '</div>' +
+      '</div>';
+  }
+
+  function wireBookingLineCard(line) {
+    var card = document.querySelector('.booking-line-card[data-line-key="' + line._key + '"]');
+    if (!card) return;
+    card.querySelector('.bl-date').addEventListener('change', function () { line.booking_date = this.value; renderBookingLines(); });
+    card.querySelector('.bl-start').addEventListener('change', function () { line.start_time = this.value; renderBookingLines(); });
+    card.querySelector('.bl-end').addEventListener('change', function () { line.end_time = this.value; });
+    card.querySelector('.bl-rate').addEventListener('change', function () {
+      var selectedId = this.value;
+      var rate = state.chargeRates.find(function (r) { return r.id === selectedId; });
+      line.charge_rate_id = selectedId || '';
+      if (rate) {
+        line.charge_rate_name = rate.name;
+        line.charge_amount = rate.amount;
+        card.querySelector('.bl-amount').value = rate.amount;
+      } else {
+        line.charge_rate_name = null;
+      }
+      updateJobProfitLine();
+    });
+    card.querySelector('.bl-amount').addEventListener('input', function () {
+      line.charge_amount = this.value === '' ? null : Number(this.value);
+      updateJobProfitLine();
+    });
+    card.querySelector('.bl-engineer').addEventListener('change', function () {
+      line.engineer_id = this.value || '';
+      if (line.engineer_id && line.cost_amount == null) {
+        var eng = engineerById(line.engineer_id);
+        if (eng && eng.rate != null) {
+          line.cost_amount = eng.rate;
+          card.querySelector('.bl-cost').value = eng.rate;
+        }
+      }
+      updateJobProfitLine();
+    });
+    card.querySelector('.bl-cost').addEventListener('input', function () {
+      line.cost_amount = this.value === '' ? null : Number(this.value);
+      updateJobProfitLine();
+    });
+    card.querySelector('[data-remove-line]').addEventListener('click', function () {
+      state.currentJobLines = state.currentJobLines.filter(function (l) { return l._key !== line._key; });
+      renderBookingLines();
+    });
+  }
+
+  function renderBookingLines() {
+    var container = $('job-booking-lines');
+    var lines = state.currentJobLines;
+    if (!lines.length) {
+      container.innerHTML = '<p class="booking-lines-empty">No booking lines yet — add one below.</p>';
+      updateJobProfitLine();
+      return;
+    }
+    var sorted = lines.slice().sort(function (a, b) {
+      if (a.booking_date !== b.booking_date) return (a.booking_date || '').localeCompare(b.booking_date || '');
+      return (a.start_time || '').localeCompare(b.start_time || '');
+    });
+    var html = '';
+    var lastDate = null;
+    sorted.forEach(function (line) {
+      if (line.booking_date && line.booking_date !== lastDate) {
+        lastDate = line.booking_date;
+        html += '<div class="booking-lines-date-heading">' + esc(friendlyDate(new Date(line.booking_date + 'T00:00:00'))) + '</div>';
+      }
+      html += bookingLineCardHtml(line);
+    });
+    container.innerHTML = html;
+    sorted.forEach(function (line) { wireBookingLineCard(line); });
     updateJobProfitLine();
   }
-  $('job-charge-rate').addEventListener('change', applyChargeRate);
-  $('job-charge-amount').addEventListener('input', updateJobProfitLine);
+
+  $('job-add-line').addEventListener('click', function () {
+    var lastDate = state.currentJobLines.length ? state.currentJobLines[state.currentJobLines.length - 1].booking_date : null;
+    state.currentJobLines.push(blankBookingLine(lastDate));
+    renderBookingLines();
+  });
 
   function openJobModal(job, presetDate) {
     var form = $('form-job');
@@ -512,43 +742,14 @@
       return '<option value="' + c.id + '">' + esc(c.company_name) + '</option>';
     }).join('') || '<option value="">Add a customer first</option>';
 
-    var rateSel = $('job-charge-rate');
-    rateSel.innerHTML = '<option value="">— Custom / none —</option>' + state.chargeRates.map(function (r) {
-      return '<option value="' + r.id + '">' + esc(r.name) + ' — ' + money(r.amount) + '/' + r.rate_type + (r.active ? '' : ' (inactive)') + '</option>';
-    }).join('');
-
-    var assignmentsByEngineer = {};
-    (job ? job.engineerAssignments : []).forEach(function (a) { assignmentsByEngineer[a.engineer_id] = a; });
-
-    var picker = $('job-engineer-picker');
-    picker.innerHTML = state.engineers.map(function (e) {
-      var existing = assignmentsByEngineer[e.id];
-      var defaultCost = existing ? existing.cost_amount : e.rate;
-      return '<div class="engineer-picker-row">' +
-        '<label><input type="checkbox" value="' + e.id + '"' + (existing ? ' checked' : '') + '> ' + esc(e.name) + (e.active ? '' : ' (inactive)') + '</label>' +
-        '<input type="number" class="engineer-cost-input" step="0.01" min="0" placeholder="Cost £" value="' + (defaultCost != null ? defaultCost : '') + '">' +
-        '</div>';
-    }).join('') || '<p style="font-size:13px; color:var(--muted); margin:0;">Add a contractor first.</p>';
-
-    picker.querySelectorAll('.engineer-picker-row').forEach(function (row) {
-      var cb = row.querySelector('input[type=checkbox]');
-      var costInput = row.querySelector('.engineer-cost-input');
-      cb.addEventListener('change', function () {
-        if (cb.checked && !costInput.value) {
-          var eng = engineerById(cb.value);
-          if (eng && eng.rate != null) costInput.value = eng.rate;
-        }
-        updateJobProfitLine();
-      });
-      costInput.addEventListener('input', updateJobProfitLine);
-    });
-
     if (job) {
       customerSel.value = job.customer_id || '';
+      $('job-client-name').value = job.client_name || '';
       $('job-service').value = job.service_type || 'IT Relocations';
       $('job-status').value = job.status || 'unassigned';
-      rateSel.value = job.charge_rate_id || '';
-      $('job-charge-amount').value = job.charge_amount != null ? job.charge_amount : '';
+      $('job-onsite-name').value = job.onsite_contact_name || '';
+      $('job-onsite-phone').value = job.onsite_contact_phone || '';
+      $('job-onsite-email').value = job.onsite_contact_email || '';
       if (job.site_address_line1 || job.site_town || job.site_postcode) {
         fillAddressFields('job-site', job, JOB_SITE_ADDR_COLS);
       } else {
@@ -557,60 +758,123 @@
         fillAddressFields('job-site', null, JOB_SITE_ADDR_COLS);
         $('job-site-line1').value = job.site_address || '';
       }
-      var s = new Date(job.start_at);
-      $('job-date').value = fmtDate(s);
-      $('job-start-time').value = fmtTime(s);
-      $('job-end-time').value = job.end_at ? fmtTime(new Date(job.end_at)) : '';
+      $('job-has-move-to').checked = !!job.has_move_to_address;
+      $('job-move-to-section').hidden = !job.has_move_to_address;
+      fillAddressFields('job-moveto', job, JOB_MOVETO_ADDR_COLS);
+      $('job-foreman-name').value = job.site_foreman_name || '';
+      $('job-foreman-phone').value = job.site_foreman_phone || '';
       $('job-po').value = job.po_reference || '';
+      $('job-description').value = job.description || '';
       $('job-notes').value = job.notes || '';
+
+      if (job.bookingLines && job.bookingLines.length) {
+        state.currentJobLines = job.bookingLines.map(function (l) {
+          return {
+            _key: l.id, id: l.id,
+            booking_date: l.booking_date,
+            start_time: l.start_time ? l.start_time.slice(0, 5) : '',
+            end_time: l.end_time ? l.end_time.slice(0, 5) : '',
+            charge_rate_id: l.charge_rate_id || '', charge_rate_name: l.charge_rate_name, charge_amount: l.charge_amount,
+            engineer_id: l.engineer_id || '', cost_amount: l.cost_amount,
+            payment_status: l.payment_status || 'unpaid', invoice_received_at: l.invoice_received_at, paid_at: l.paid_at
+          };
+        });
+      } else if (job.start_at) {
+        // Job saved under the old single date/rate/engineer-picker model,
+        // before booking lines existed — synthesize lines from it so
+        // nothing is lost the first time it's reopened (one line per
+        // previously-assigned contractor; only the first carries the old
+        // charge amount, since that single figure covered the whole job,
+        // not each contractor individually).
+        var s = new Date(job.start_at);
+        var baseDate = fmtDate(s), baseStart = fmtTime(s), baseEnd = job.end_at ? fmtTime(new Date(job.end_at)) : '';
+        var legacyAssignments = job.engineerAssignments || [];
+        if (legacyAssignments.length) {
+          state.currentJobLines = legacyAssignments.map(function (a, idx) {
+            state.jobLineSeq += 1;
+            return {
+              _key: 'legacy-' + state.jobLineSeq, id: null,
+              booking_date: baseDate, start_time: baseStart, end_time: baseEnd,
+              charge_rate_id: idx === 0 ? (job.charge_rate_id || '') : '',
+              charge_rate_name: idx === 0 ? (job.charge_rate_name || null) : null,
+              charge_amount: idx === 0 ? job.charge_amount : null,
+              engineer_id: a.engineer_id || '', cost_amount: a.cost_amount,
+              payment_status: a.payment_status || 'unpaid', invoice_received_at: a.invoice_received_at, paid_at: a.paid_at
+            };
+          });
+        } else {
+          state.jobLineSeq += 1;
+          state.currentJobLines = [{
+            _key: 'legacy-' + state.jobLineSeq, id: null,
+            booking_date: baseDate, start_time: baseStart, end_time: baseEnd,
+            charge_rate_id: job.charge_rate_id || '', charge_rate_name: job.charge_rate_name || null, charge_amount: job.charge_amount,
+            engineer_id: '', cost_amount: null, payment_status: 'unpaid', invoice_received_at: null, paid_at: null
+          }];
+        }
+      } else {
+        state.currentJobLines = [];
+      }
     } else {
-      $('job-date').value = presetDate || fmtDate(new Date());
-      $('job-start-time').value = '09:00';
+      $('job-move-to-section').hidden = true;
+      state.currentJobLines = [blankBookingLine(presetDate)];
     }
-    updateJobProfitLine();
+
+    renderBookingLines();
     show($('modal-job'));
   }
 
   $('form-job').addEventListener('submit', async function (e) {
     e.preventDefault();
     var id = $('job-id').value;
-    var date = $('job-date').value;
-    var startTime = $('job-start-time').value;
-    var endTime = $('job-end-time').value;
     var siteAddrFields = readAddressFields('job-site', JOB_SITE_ADDR_COLS);
-    var rateId = $('job-charge-rate').value || null;
-    var rate = rateId ? state.chargeRates.find(function (r) { return r.id === rateId; }) : null;
-    var chargeAmountVal = $('job-charge-amount').value;
+    var hasMoveTo = $('job-has-move-to').checked;
+    var moveToFields = readAddressFields('job-moveto', JOB_MOVETO_ADDR_COLS);
+    if (!hasMoveTo) {
+      // Don't keep stale "moving to" address data around once the box is unticked.
+      Object.keys(moveToFields).forEach(function (k) { moveToFields[k] = ''; });
+    }
+
+    var lines = state.currentJobLines;
+    if (!lines.length) { toast('Add at least one booking line before saving.', true); return; }
+    for (var i = 0; i < lines.length; i++) {
+      if (!lines[i].booking_date) { toast('Every booking line needs a date.', true); return; }
+    }
+
+    // jobs.start_at / end_at are NOT NULL and drive the flat Jobs-list sort
+    // and the old Outlook feed — derive them from the earliest/latest
+    // booking line so they stay meaningful even though the real per-line
+    // detail now lives in job_booking_lines.
+    var sortedLines = lines.slice().sort(function (a, b) {
+      if (a.booking_date !== b.booking_date) return a.booking_date < b.booking_date ? -1 : 1;
+      return (a.start_time || '').localeCompare(b.start_time || '');
+    });
+    var firstLine = sortedLines[0];
+    var lastLine = sortedLines[sortedLines.length - 1];
+    var startAt = new Date(firstLine.booking_date + 'T' + (firstLine.start_time || '09:00') + ':00');
+    var endAt = lastLine.end_time ? new Date(lastLine.booking_date + 'T' + lastLine.end_time + ':00') : null;
+
     var payload = Object.assign({
       customer_id: $('job-customer').value || null,
+      client_name: $('job-client-name').value.trim(),
       service_type: $('job-service').value,
       status: $('job-status').value,
-      charge_rate_id: rateId,
-      charge_amount: chargeAmountVal === '' ? null : Number(chargeAmountVal),
-      charge_rate_name: rate ? rate.name : null,
+      onsite_contact_name: $('job-onsite-name').value.trim(),
+      onsite_contact_phone: $('job-onsite-phone').value.trim(),
+      onsite_contact_email: $('job-onsite-email').value.trim(),
       // site_address is kept as a plain-text summary, auto-derived from the
       // structured fields below, so the jobs table, "Email contractor" and
       // the Outlook calendar feed keep working unchanged.
       site_address: assembleAddress(siteAddrFields, JOB_SITE_ADDR_COLS),
-      start_at: new Date(date + 'T' + startTime).toISOString(),
-      end_at: endTime ? new Date(date + 'T' + endTime).toISOString() : null,
+      has_move_to_address: hasMoveTo,
+      site_foreman_name: $('job-foreman-name').value.trim(),
+      site_foreman_phone: $('job-foreman-phone').value.trim(),
       po_reference: $('job-po').value.trim(),
+      description: $('job-description').value.trim(),
       notes: $('job-notes').value.trim(),
+      start_at: startAt.toISOString(),
+      end_at: endAt ? endAt.toISOString() : null,
       updated_at: new Date().toISOString()
-    }, siteAddrFields);
-
-    var existingJob = id ? state.jobs.find(function (j) { return j.id === id; }) : null;
-    var existingByEngineer = {};
-    (existingJob ? existingJob.engineerAssignments : []).forEach(function (a) { existingByEngineer[a.engineer_id] = a; });
-
-    var selected = []; // { engineerId, cost }
-    $('job-engineer-picker').querySelectorAll('.engineer-picker-row').forEach(function (row) {
-      var cb = row.querySelector('input[type=checkbox]');
-      if (cb && cb.checked) {
-        var costVal = row.querySelector('.engineer-cost-input').value;
-        selected.push({ engineerId: cb.value, cost: costVal === '' ? null : Number(costVal) });
-      }
-    });
+    }, siteAddrFields, moveToFields);
 
     var jobId = id;
     if (id) {
@@ -622,24 +886,51 @@
       jobId = ins.data.id;
     }
 
-    // Diff contractor assignments rather than delete-all-and-reinsert, so
-    // payment status / invoice-received / paid dates survive an edit for
-    // any contractor who stays assigned.
-    var selectedIds = selected.map(function (s) { return s.engineerId; });
-    var toRemove = Object.keys(existingByEngineer).filter(function (eid) { return selectedIds.indexOf(eid) === -1; });
+    // Diff booking lines by id rather than delete-all-and-reinsert, so a
+    // line's payment status survives an edit to any *other* line on the job.
+    var existingJob = id ? state.jobs.find(function (j) { return j.id === id; }) : null;
+    var existingIds = (existingJob && existingJob.bookingLines || []).map(function (l) { return l.id; });
+    var keptIds = lines.filter(function (l) { return l.id; }).map(function (l) { return l.id; });
+    var toRemove = existingIds.filter(function (lid) { return keptIds.indexOf(lid) === -1; });
     if (toRemove.length) {
-      var delRes = await sb.from('job_engineers').delete().eq('job_id', jobId).in('engineer_id', toRemove);
-      if (delRes.error) { toast('Could not update contractor assignment: ' + delRes.error.message, true); return; }
+      var delRes = await sb.from('job_booking_lines').delete().in('id', toRemove);
+      if (delRes.error) { toast('Could not update booking lines: ' + delRes.error.message, true); return; }
     }
-    var toInsert = selected.filter(function (s) { return !existingByEngineer[s.engineerId]; })
-      .map(function (s) { return { job_id: jobId, engineer_id: s.engineerId, cost_amount: s.cost, payment_status: 'unpaid' }; });
+
+    var toInsert = lines.filter(function (l) { return !l.id; }).map(function (l) {
+      return {
+        job_id: jobId,
+        booking_date: l.booking_date,
+        start_time: l.start_time || null,
+        end_time: l.end_time || null,
+        charge_rate_id: l.charge_rate_id || null,
+        charge_rate_name: l.charge_rate_name || null,
+        charge_amount: l.charge_amount,
+        engineer_id: l.engineer_id || null,
+        cost_amount: l.cost_amount,
+        payment_status: l.payment_status || 'unpaid'
+      };
+    });
     if (toInsert.length) {
-      var insEng = await sb.from('job_engineers').insert(toInsert);
-      if (insEng.error) { toast('Could not assign contractors: ' + insEng.error.message, true); return; }
+      var insLines = await sb.from('job_booking_lines').insert(toInsert);
+      if (insLines.error) { toast('Could not save booking lines: ' + insLines.error.message, true); return; }
     }
-    var toUpdate = selected.filter(function (s) { return existingByEngineer[s.engineerId] && existingByEngineer[s.engineerId].cost_amount !== s.cost; });
-    for (var i = 0; i < toUpdate.length; i++) {
-      await sb.from('job_engineers').update({ cost_amount: toUpdate[i].cost }).eq('job_id', jobId).eq('engineer_id', toUpdate[i].engineerId);
+
+    var toUpdate = lines.filter(function (l) { return l.id; });
+    for (var u = 0; u < toUpdate.length; u++) {
+      var l = toUpdate[u];
+      var updRes = await sb.from('job_booking_lines').update({
+        booking_date: l.booking_date,
+        start_time: l.start_time || null,
+        end_time: l.end_time || null,
+        charge_rate_id: l.charge_rate_id || null,
+        charge_rate_name: l.charge_rate_name || null,
+        charge_amount: l.charge_amount,
+        engineer_id: l.engineer_id || null,
+        cost_amount: l.cost_amount,
+        updated_at: new Date().toISOString()
+      }).eq('id', l.id);
+      if (updRes.error) { toast('Could not update a booking line: ' + updRes.error.message, true); return; }
     }
 
     hide($('modal-job'));
@@ -975,11 +1266,24 @@
   function paymentRows() {
     var rows = [];
     state.jobs.forEach(function (j) {
-      (j.engineerAssignments || []).forEach(function (a) {
-        rows.push({ job: j, assignment: a, engineer: engineerById(a.engineer_id) });
-      });
+      if (j.bookingLines && j.bookingLines.length) {
+        j.bookingLines.forEach(function (l) {
+          if (!l.engineer_id) return; // only lines with a contractor actually booked need paying
+          rows.push({ job: j, line: l, engineer: engineerById(l.engineer_id), legacy: false });
+        });
+      } else {
+        // Job saved before booking lines existed and not yet reopened —
+        // fall back to its old job_engineers assignments so payment
+        // tracking doesn't just disappear for it.
+        (j.engineerAssignments || []).forEach(function (a) {
+          rows.push({
+            job: j, engineer: engineerById(a.engineer_id), legacy: true,
+            line: { id: null, booking_date: fmtDate(new Date(j.start_at)), payment_status: a.payment_status, cost_amount: a.cost_amount, charge_rate_name: j.charge_rate_name, engineer_id: a.engineer_id }
+          });
+        });
+      }
     });
-    rows.sort(function (a, b) { return b.job.start_at.localeCompare(a.job.start_at); });
+    rows.sort(function (a, b) { return (b.line.booking_date || '').localeCompare(a.line.booking_date || ''); });
     return rows;
   }
 
@@ -993,24 +1297,25 @@
     var statusFilter = $('payments-status-filter').value;
     var q = ($('payments-search').value || '').toLowerCase();
     var rows = paymentRows().filter(function (r) {
-      if (statusFilter && (r.assignment.payment_status || 'unpaid') !== statusFilter) return false;
+      if (statusFilter && (r.line.payment_status || 'unpaid') !== statusFilter) return false;
       if (!q) return true;
-      var hay = ((r.engineer ? r.engineer.name : '') + ' ' + customerName(r.job.customer_id)).toLowerCase();
+      var hay = ((r.engineer ? r.engineer.name : '') + ' ' + customerName(r.job.customer_id) + ' ' + (r.job.client_name || '')).toLowerCase();
       return hay.indexOf(q) !== -1;
     });
     $('payments-empty').hidden = rows.length > 0;
     $('payments-tbody').innerHTML = rows.map(function (r) {
-      var t = new Date(r.job.start_at);
-      var status = r.assignment.payment_status || 'unpaid';
-      var cost = r.assignment.cost_amount != null ? r.assignment.cost_amount : (r.engineer ? r.engineer.rate : null);
+      var d = r.line.booking_date ? new Date(r.line.booking_date + 'T00:00:00') : null;
+      var status = r.line.payment_status || 'unpaid';
+      var cost = r.line.cost_amount != null ? r.line.cost_amount : (r.engineer ? r.engineer.rate : null);
       var actions = '';
       if (status === 'unpaid') actions += '<button class="btn btn-ghost btn-sm" data-pay-action="invoice_received">Invoice received</button>';
       if (status === 'invoice_received') actions += '<button class="btn btn-primary btn-sm" data-pay-action="paid">Mark paid</button>';
       if (status !== 'unpaid') actions += ' <button class="btn btn-ghost btn-sm" data-pay-action="unpaid">Reset</button>';
-      return '<tr data-job-id="' + r.job.id + '" data-engineer-id="' + r.assignment.engineer_id + '">' +
-        '<td>' + shortDate(t) + '</td>' +
+      return '<tr data-line-id="' + (r.line.id || '') + '" data-legacy="' + (r.legacy ? '1' : '') + '" data-job-id="' + r.job.id + '" data-engineer-id="' + (r.line.engineer_id || '') + '">' +
+        '<td>' + (d ? shortDate(d) : '—') + '</td>' +
         '<td>' + esc(customerName(r.job.customer_id)) + '</td>' +
-        '<td>' + esc(r.job.service_type || '—') + '</td>' +
+        '<td>' + esc(r.job.client_name || r.job.service_type || '—') + '</td>' +
+        '<td>' + esc(r.line.charge_rate_name || '—') + '</td>' +
         '<td>' + esc(r.engineer ? r.engineer.name : 'Unknown contractor') + '</td>' +
         '<td>' + (cost != null ? money(cost) : '—') + '</td>' +
         '<td><span class="badge status-' + status + '">' + paymentStatusLabel(status) + '</span></td>' +
@@ -1019,13 +1324,14 @@
     $('payments-tbody').querySelectorAll('[data-pay-action]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         var tr = btn.closest('tr');
-        var jobId = tr.dataset.jobId, engineerId = tr.dataset.engineerId;
         var newStatus = btn.dataset.payAction;
         var patch = { payment_status: newStatus };
         if (newStatus === 'invoice_received') patch.invoice_received_at = new Date().toISOString();
         if (newStatus === 'paid') patch.paid_at = new Date().toISOString();
         if (newStatus === 'unpaid') { patch.invoice_received_at = null; patch.paid_at = null; }
-        var res = await sb.from('job_engineers').update(patch).eq('job_id', jobId).eq('engineer_id', engineerId);
+        var res = tr.dataset.legacy
+          ? await sb.from('job_engineers').update(patch).eq('job_id', tr.dataset.jobId).eq('engineer_id', tr.dataset.engineerId)
+          : await sb.from('job_booking_lines').update(patch).eq('id', tr.dataset.lineId);
         if (res.error) { toast('Could not update payment status: ' + res.error.message, true); return; }
         await loadJobs();
         renderPaymentsTable();
@@ -1064,11 +1370,17 @@
   function reportFilteredJobs() {
     var from = $('report-from').value;
     var to = $('report-to').value;
+    if (!from && !to) return state.jobs;
     return state.jobs.filter(function (j) {
-      var d = fmtDate(new Date(j.start_at));
-      if (from && d < from) return false;
-      if (to && d > to) return false;
-      return true;
+      // A job is "in range" if any of its booking dates fall in the range
+      // (falls back to the old single start_at date for a job that hasn't
+      // been resaved under the booking-lines model yet).
+      var dates = jobBookingDates(j);
+      return dates.some(function (d) {
+        if (from && d < from) return false;
+        if (to && d > to) return false;
+        return true;
+      });
     });
   }
 
@@ -1079,20 +1391,23 @@
 
     // Profit by job
     var totalCharge = 0, totalCost = 0;
-    var sorted = jobs.slice().sort(function (a, b) { return b.start_at.localeCompare(a.start_at); });
+    var sorted = jobs.slice().sort(function (a, b) {
+      var aKey = jobBookingDates(a)[0] || '';
+      var bKey = jobBookingDates(b)[0] || '';
+      return bKey.localeCompare(aKey);
+    });
     $('report-profit-empty').hidden = sorted.length > 0;
     $('report-profit-tbody').innerHTML = sorted.map(function (j) {
-      var t = new Date(j.start_at);
       var cost = jobEngineerCost(j);
-      var charge = j.charge_amount != null ? Number(j.charge_amount) : null;
+      var charge = jobChargeTotal(j);
       totalCharge += charge || 0;
       totalCost += cost;
-      var margin = (charge != null && charge > 0) ? Math.round(((charge - cost) / charge) * 100) + '%' : '—';
+      var margin = (charge > 0) ? Math.round(((charge - cost) / charge) * 100) + '%' : '—';
       return '<tr>' +
-        '<td>' + shortDate(t) + '</td>' +
+        '<td>' + jobDateRangeLabel(j) + '</td>' +
         '<td>' + esc(customerName(j.customer_id)) + '</td>' +
-        '<td>' + esc(j.service_type || '—') + '</td>' +
-        '<td>' + (charge != null ? money(charge) : '—') + '</td>' +
+        '<td>' + esc(j.client_name || j.service_type || '—') + '</td>' +
+        '<td>' + (charge ? money(charge) : '—') + '</td>' +
         '<td>' + money(cost) + '</td>' +
         '<td>' + profitCell(j) + '</td>' +
         '<td>' + margin + '</td></tr>';
@@ -1106,16 +1421,21 @@
 
     // Contractor usage
     var byEngineer = {};
+    function tallyEngineerUse(engineerId, costAmount, paymentStatus) {
+      if (!engineerId) return;
+      byEngineer[engineerId] = byEngineer[engineerId] || { count: 0, total: 0, paid: 0, outstanding: 0 };
+      var amount = costAmount != null ? Number(costAmount) : (engineerById(engineerId) ? Number(engineerById(engineerId).rate) || 0 : 0);
+      byEngineer[engineerId].count += 1;
+      byEngineer[engineerId].total += amount;
+      if (paymentStatus === 'paid') byEngineer[engineerId].paid += amount;
+      else byEngineer[engineerId].outstanding += amount;
+    }
     jobs.forEach(function (j) {
-      (j.engineerAssignments || []).forEach(function (a) {
-        var key = a.engineer_id;
-        byEngineer[key] = byEngineer[key] || { count: 0, total: 0, paid: 0, outstanding: 0 };
-        var amount = a.cost_amount != null ? Number(a.cost_amount) : (engineerById(key) ? Number(engineerById(key).rate) || 0 : 0);
-        byEngineer[key].count += 1;
-        byEngineer[key].total += amount;
-        if (a.payment_status === 'paid') byEngineer[key].paid += amount;
-        else byEngineer[key].outstanding += amount;
-      });
+      if (j.bookingLines && j.bookingLines.length) {
+        j.bookingLines.forEach(function (l) { tallyEngineerUse(l.engineer_id, l.cost_amount, l.payment_status); });
+      } else {
+        (j.engineerAssignments || []).forEach(function (a) { tallyEngineerUse(a.engineer_id, a.cost_amount, a.payment_status); });
+      }
     });
     var usageRows = Object.keys(byEngineer).map(function (id) {
       var eng = engineerById(id);
