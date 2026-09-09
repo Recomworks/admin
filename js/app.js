@@ -237,9 +237,10 @@
     document.querySelectorAll('.nav-item').forEach(function (b) {
       b.classList.toggle('active', b.dataset.view === name);
     });
-    ['calendar', 'jobs', 'customers', 'engineers', 'payments', 'reports', 'rates'].forEach(function (v) {
+    ['calendar', 'jobs', 'customers', 'clients', 'engineers', 'payments', 'reports', 'rates'].forEach(function (v) {
       $('view-' + v).hidden = (v !== name);
     });
+    if (name === 'clients') renderClientsTable();
     if (name === 'payments') renderPaymentsTable();
     if (name === 'reports') renderReports();
     if (name === 'rates') renderRatesTable();
@@ -260,6 +261,7 @@
     renderCalendar();
     renderJobsTable();
     renderCustomersTable();
+    renderClientsTable();
     renderEngineersTable();
   }
 
@@ -749,8 +751,17 @@
     $('job-modal-title').textContent = job ? 'Edit job' : 'New job';
     $('job-delete').hidden = !job;
 
+    // Jobs are booked against a top-level customer; which of their
+    // clients the job is actually for is captured separately below in
+    // the "Client name" field, so clients don't clutter this list.
     var customerSel = $('job-customer');
-    customerSel.innerHTML = state.customers.map(function (c) {
+    var topLevelCustomers = state.customers.filter(function (c) { return !c.parent_customer_id; });
+    // If this job is already saved against a customer that's since become
+    // a client (has a parent), keep it selectable so the existing link
+    // isn't silently lost when the job is reopened.
+    var existing = job && state.customers.find(function (c) { return c.id === job.customer_id; });
+    if (existing && existing.parent_customer_id && topLevelCustomers.indexOf(existing) === -1) topLevelCustomers = topLevelCustomers.concat([existing]);
+    customerSel.innerHTML = topLevelCustomers.map(function (c) {
       return '<option value="' + c.id + '">' + esc(c.company_name) + '</option>';
     }).join('') || '<option value="">Add a customer first</option>';
 
@@ -971,30 +982,17 @@
 
   function renderCustomersTable() {
     var q = ($('customer-search').value || '').toLowerCase();
-    var byId = customersById();
+    // Customers page is top-level customers only — anyone linked to a
+    // customer as a client lives on the separate Clients page instead.
     var rows = state.customers.filter(function (c) {
+      if (c.parent_customer_id) return false;
       return !q || (c.company_name + ' ' + (c.contact_name || '')).toLowerCase().indexOf(q) !== -1;
     });
-    // Group sub-customers directly under their owner: sort by the owning
-    // company's name first (a top-level customer is its own group), then
-    // put the owner itself before its sub-customers, then alphabetically.
-    rows = rows.slice().sort(function (a, b) {
-      var aParent = byId[a.parent_customer_id];
-      var bParent = byId[b.parent_customer_id];
-      var aGroup = (aParent ? aParent.company_name : a.company_name).toLowerCase();
-      var bGroup = (bParent ? bParent.company_name : b.company_name).toLowerCase();
-      if (aGroup !== bGroup) return aGroup < bGroup ? -1 : 1;
-      var aChild = aParent ? 1 : 0, bChild = bParent ? 1 : 0;
-      if (aChild !== bChild) return aChild - bChild;
-      return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1;
-    });
+    rows = rows.slice().sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
     $('customers-empty').hidden = rows.length > 0;
     $('customers-tbody').innerHTML = rows.map(function (c) {
-      var parent = byId[c.parent_customer_id];
-      var nameCell = (parent ? '<span style="color:var(--muted);">↳ </span>' : '') + esc(c.company_name);
       return '<tr data-id="' + c.id + '" style="cursor:pointer;">' +
-        '<td>' + nameCell + '</td>' +
-        '<td class="sub-client-tag">' + (parent ? esc(parent.company_name) : '—') + '</td>' +
+        '<td>' + esc(c.company_name) + '</td>' +
         '<td>' + esc(c.contact_name || '—') + (c.contact_position ? ' <span style="color:var(--muted);">(' + esc(c.contact_position) + ')</span>' : '') + '</td>' +
         '<td>' + esc(c.email || '—') + '</td><td>' + esc(c.phone || '—') + '</td><td></td></tr>';
     }).join('');
@@ -1006,6 +1004,34 @@
   }
   $('customer-search').addEventListener('input', renderCustomersTable);
   $('btn-new-customer').addEventListener('click', function () { openCustomerModal(null); });
+
+  // ── clients (customers linked to a customer) ────────────────────
+  function renderClientsTable() {
+    var q = ($('client-search').value || '').toLowerCase();
+    var byId = customersById();
+    var rows = state.customers.filter(function (c) { return !!c.parent_customer_id; });
+    rows = rows.filter(function (c) {
+      var parent = byId[c.parent_customer_id];
+      return !q || (c.company_name + ' ' + (c.contact_name || '') + ' ' + (parent ? parent.company_name : '')).toLowerCase().indexOf(q) !== -1;
+    });
+    rows = rows.slice().sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
+    $('clients-empty').hidden = rows.length > 0;
+    $('clients-tbody').innerHTML = rows.map(function (c) {
+      var parent = byId[c.parent_customer_id];
+      return '<tr data-id="' + c.id + '" style="cursor:pointer;">' +
+        '<td>' + esc(c.company_name) + '</td>' +
+        '<td>' + (parent ? esc(parent.company_name) : '—') + '</td>' +
+        '<td>' + esc(c.contact_name || '—') + (c.contact_position ? ' <span style="color:var(--muted);">(' + esc(c.contact_position) + ')</span>' : '') + '</td>' +
+        '<td>' + esc(c.email || '—') + '</td><td>' + esc(c.phone || '—') + '</td><td></td></tr>';
+    }).join('');
+    $('clients-tbody').querySelectorAll('tr').forEach(function (tr) {
+      tr.addEventListener('click', function () {
+        openCustomerDetailModal(state.customers.find(function (c) { return c.id === tr.dataset.id; }));
+      });
+    });
+  }
+  $('client-search').addEventListener('input', renderClientsTable);
+  $('btn-new-client').addEventListener('click', function () { openCustomerModal(null, null, true); });
 
   // ── customer detail (view) ──────────────────────────────────────
   async function openCustomerDetailModal(c) {
@@ -1024,10 +1050,10 @@
     if (!logoHtml) logoHtml = '<div class="logo-preview"><span>No logo</span></div>';
 
     var address = assembleAddress(c, CUSTOMER_ADDR_COLS);
+    var isClient = !!parent;
     var body =
       '<div class="detail-header">' + logoHtml +
-      '<div>' + (parent ? '<div class="sub-client-tag">Sub-client of ' + esc(parent.company_name) + '</div>' : '') +
-      '<div style="font-size:20px; font-weight:700; font-family:\'Space Grotesk\',system-ui,sans-serif;">' + esc(c.company_name) + '</div></div></div>' +
+      '<div><div style="font-size:20px; font-weight:700; font-family:\'Space Grotesk\',system-ui,sans-serif;">' + esc(c.company_name) + '</div></div></div>' +
       '<div class="detail-field-row">' +
       '<div class="detail-field"><div class="detail-label">Contact</div><div class="detail-value">' + esc(c.contact_name || '—') + (c.contact_position ? ' <span style="color:var(--muted);">(' + esc(c.contact_position) + ')</span>' : '') + '</div></div>' +
       '<div class="detail-field"><div class="detail-label">Phone</div><div class="detail-value">' + esc(c.phone || '—') + '</div></div>' +
@@ -1036,13 +1062,24 @@
       '<div class="detail-field"><div class="detail-label">Email</div><div class="detail-value">' + esc(c.email || '—') + '</div></div>' +
       '<div class="detail-field"><div class="detail-label">Address</div><div class="detail-value">' + esc(address || '—') + '</div></div>' +
       '</div>' +
+      (isClient ? '<div class="detail-field" style="margin-bottom:16px;"><div class="detail-label">Customer</div><div class="detail-value"><a href="#" id="customer-detail-parent-link">' + esc(parent.company_name) + '</a></div></div>' : '') +
       (c.notes ? '<div class="detail-field" style="margin-bottom:16px;"><div class="detail-label">Notes</div><div class="detail-value">' + esc(c.notes) + '</div></div>' : '') +
-      '<div class="subsection">' +
-      '<div class="subsection-title">Clients</div>' +
-      '<div id="customer-detail-clients"></div>' +
-      '<button class="btn btn-ghost btn-sm" type="button" id="customer-detail-add-client">+ Add client</button>' +
-      '</div>';
+      (isClient ? '' :
+        '<div class="subsection">' +
+        '<div class="subsection-title">Clients</div>' +
+        '<div id="customer-detail-clients"></div>' +
+        '<button class="btn btn-ghost btn-sm" type="button" id="customer-detail-add-client">+ Add client</button>' +
+        '</div>');
     $('customer-detail-body').innerHTML = body;
+
+    if (isClient) {
+      $('customer-detail-parent-link').addEventListener('click', function (e) {
+        e.preventDefault();
+        openCustomerDetailModal(parent);
+      });
+      show($('modal-customer-detail'));
+      return;
+    }
 
     var children = state.customers.filter(function (x) { return x.parent_customer_id === c.id; })
       .sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
@@ -1050,7 +1087,7 @@
     // Not every "client" gets a full customer record — a job's own
     // "Client name" field is often just typed in directly (e.g. "Insight
     // Hub" on a Burton & Smith job) without ever creating a linked
-    // sub-customer for it. Surface those too, so they're not invisible
+    // client record for it. Surface those too, so they're not invisible
     // here, with a one-click way to promote one into a real record.
     var childNamesLower = children.map(function (x) { return x.company_name.toLowerCase(); });
     var jobClientNames = {};
@@ -1113,19 +1150,30 @@
     }
   }
 
-  function openCustomerModal(c, presetParentId) {
+  function openCustomerModal(c, presetParentId, forceClient) {
     $('form-customer').reset();
+    var isClient = !!(presetParentId || forceClient || (c && c.parent_customer_id));
     $('customer-id').value = c ? c.id : '';
-    $('customer-modal-title').textContent = c ? 'Edit customer' : 'New customer';
+    $('customer-modal-title').textContent = c ? (isClient ? 'Edit client' : 'Edit customer') : (isClient ? 'New client' : 'New customer');
     $('customer-delete').hidden = !c;
     $('customer-company').value = c ? c.company_name : '';
 
+    // The "Customer" field only applies to clients — a plain top-level
+    // customer has no parent to pick. Only top-level customers themselves
+    // can be picked as the parent, keeping this a simple two-level
+    // Customer → Client structure.
+    var parentField = $('customer-parent-field');
     var parentSel = $('customer-parent');
-    parentSel.innerHTML = '<option value="">— None: this is a main customer —</option>' +
-      state.customers.filter(function (other) { return !c || other.id !== c.id; }).map(function (other) {
-        return '<option value="' + other.id + '">' + esc(other.company_name) + '</option>';
-      }).join('');
-    parentSel.value = c ? (c.parent_customer_id || '') : (presetParentId || '');
+    parentField.hidden = !isClient;
+    parentSel.required = isClient;
+    if (isClient) {
+      var topLevel = state.customers.filter(function (other) { return !other.parent_customer_id && (!c || other.id !== c.id); });
+      parentSel.innerHTML = '<option value="" disabled' + (c && c.parent_customer_id ? '' : ' selected') + '>Select a customer…</option>' +
+        topLevel.map(function (other) {
+          return '<option value="' + other.id + '">' + esc(other.company_name) + '</option>';
+        }).join('');
+      parentSel.value = c ? (c.parent_customer_id || '') : (presetParentId || '');
+    }
 
     $('customer-contact').value = c ? (c.contact_name || '') : '';
     $('customer-contact-position').value = c ? (c.contact_position || '') : '';
@@ -1157,7 +1205,7 @@
     if (oldPath && oldPath !== path) await sb.storage.from('logos').remove([oldPath]);
     await loadCustomers();
     refreshCustomerLogoPreview(state.customers.find(function (c) { return c.id === id; }));
-    renderCustomersTable();
+    renderCustomersTable(); renderClientsTable();
     toast('Logo uploaded.');
     this.value = '';
   });
@@ -1171,7 +1219,7 @@
     if (res.error) { toast('Could not remove logo: ' + res.error.message, true); return; }
     await loadCustomers();
     refreshCustomerLogoPreview(state.customers.find(function (x) { return x.id === id; }));
-    renderCustomersTable();
+    renderCustomersTable(); renderClientsTable();
     toast('Logo removed.');
   });
 
@@ -1180,7 +1228,7 @@
     var id = $('customer-id').value;
     var payload = Object.assign({
       company_name: $('customer-company').value.trim(),
-      parent_customer_id: $('customer-parent').value || null,
+      parent_customer_id: $('customer-parent-field').hidden ? null : ($('customer-parent').value || null),
       contact_name: $('customer-contact').value.trim(),
       contact_position: $('customer-contact-position').value.trim(),
       phone: $('customer-phone').value.trim(),
@@ -1195,8 +1243,8 @@
     hide($('modal-customer'));
     toast('Customer saved.');
     await loadCustomers();
-    renderCustomersTable(); renderCalendar(); renderJobsTable();
-    // Land back on a detail view: a sub-client's own owner (so the new/
+    renderCustomersTable(); renderClientsTable(); renderCalendar(); renderJobsTable();
+    // Land back on a detail view: a client's own customer (so the new/
     // edited client shows up in context in its parent's list), otherwise
     // the record itself — this is also where the logo upload lives.
     var saved = state.customers.find(function (c) { return c.id === savedId; });
@@ -1213,7 +1261,7 @@
     hide($('modal-customer-detail'));
     toast('Customer deleted.');
     await loadCustomers();
-    renderCustomersTable(); renderCalendar(); renderJobsTable();
+    renderCustomersTable(); renderClientsTable(); renderCalendar(); renderJobsTable();
     if (deleted && deleted.parent_customer_id) {
       var parent = state.customers.find(function (c) { return c.id === deleted.parent_customer_id; });
       if (parent) openCustomerDetailModal(parent);
