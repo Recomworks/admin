@@ -217,6 +217,27 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .badge.status-invoice_received { background: #FDF3E0; color: var(--amber); }
 .badge.status-paid { background: #E4F5EA; color: var(--green); }
 
+/* Checkbox-only field (e.g. "also includes a moving-to address") */
+.checkbox-field { margin-bottom: 16px; }
+.checkbox-field label { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 14px; margin: 0; }
+.checkbox-field input { width: auto; }
+
+/* Booking lines (date + time + rate + engineer rows on a job) */
+.booking-lines-date-heading {
+  font-size: 12px; font-weight: 700; color: var(--muted); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.booking-lines-date-heading:first-child { margin-top: 0; }
+.booking-line-card {
+  border: 1.5px solid var(--line); border-radius: 9px; padding: 12px; margin-bottom: 10px; background: #fff;
+}
+.booking-line-card .field-row { margin-bottom: 10px; }
+.booking-line-card .field-row:last-child { margin-bottom: 0; }
+.booking-line-card .field { margin-bottom: 10px; }
+.booking-line-remove { flex-shrink: 0; }
+.booking-line-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.booking-line-head .booking-line-label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.booking-lines-empty { font-size: 13px; color: var(--muted); padding: 8px 0 4px; }
+
 /* Reports */
 .report-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
 .report-tab {
