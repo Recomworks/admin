@@ -97,7 +97,9 @@
     currentView: 'calendar',
     reportTab: 'profit',
     currentJobLines: [], // in-progress edit state for the open job modal's booking lines
-    jobLineSeq: 0        // local id counter for brand-new (unsaved) booking lines
+    jobLineSeq: 0,       // local id counter for brand-new (unsaved) booking lines
+    invoiceByLineId: {}, // booking_line_id -> engineer_invoices row, for the Payments "Invoice" column
+    invoiceModalRow: null // the payment row currently open in the "Record invoice received" modal
   };
 
   // ── auth flow ─────────────────────────────────────────────────
@@ -254,11 +256,21 @@
   // ── data loading ──────────────────────────────────────────────
   async function loadAll() {
     await Promise.all([loadCustomers(), loadEngineers(), loadChargeRates()]);
-    await loadJobs();
+    await Promise.all([loadJobs(), loadInvoiceLinks()]);
     renderCalendar();
     renderJobsTable();
     renderCustomersTable();
     renderEngineersTable();
+  }
+
+  // Which invoice (if any) is attached to each booking line — powers the
+  // "Invoice" column on Payments (date + a link to view the actual file).
+  async function loadInvoiceLinks() {
+    var res = await sb.from('invoice_booking_lines').select('*, engineer_invoices(*)');
+    if (res.error) { toast('Could not load invoice records: ' + res.error.message, true); return; }
+    var map = {};
+    (res.data || []).forEach(function (row) { map[row.booking_line_id] = row.engineer_invoices; });
+    state.invoiceByLineId = map;
   }
 
   async function loadCustomers() {
@@ -988,12 +1000,77 @@
     }).join('');
     $('customers-tbody').querySelectorAll('tr').forEach(function (tr) {
       tr.addEventListener('click', function () {
-        openCustomerModal(state.customers.find(function (c) { return c.id === tr.dataset.id; }));
+        openCustomerDetailModal(state.customers.find(function (c) { return c.id === tr.dataset.id; }));
       });
     });
   }
   $('customer-search').addEventListener('input', renderCustomersTable);
   $('btn-new-customer').addEventListener('click', function () { openCustomerModal(null); });
+
+  // ── customer detail (view) ──────────────────────────────────────
+  async function openCustomerDetailModal(c) {
+    if (!c) return;
+    state.viewingCustomerId = c.id;
+    var byId = customersById();
+    var parent = byId[c.parent_customer_id];
+
+    $('customer-detail-title').textContent = c.company_name;
+
+    var logoHtml = '';
+    if (c.logo_path) {
+      var url = await signedUrl('logos', c.logo_path, 3600);
+      if (url) logoHtml = '<div class="logo-preview"><img src="' + url + '" alt=""></div>';
+    }
+    if (!logoHtml) logoHtml = '<div class="logo-preview"><span>No logo</span></div>';
+
+    var address = assembleAddress(c, CUSTOMER_ADDR_COLS);
+    var body =
+      '<div class="detail-header">' + logoHtml +
+      '<div>' + (parent ? '<div class="sub-client-tag">Sub-client of ' + esc(parent.company_name) + '</div>' : '') +
+      '<div style="font-size:20px; font-weight:700; font-family:\'Space Grotesk\',system-ui,sans-serif;">' + esc(c.company_name) + '</div></div></div>' +
+      '<div class="detail-field-row">' +
+      '<div class="detail-field"><div class="detail-label">Contact</div><div class="detail-value">' + esc(c.contact_name || '—') + (c.contact_position ? ' <span style="color:var(--muted);">(' + esc(c.contact_position) + ')</span>' : '') + '</div></div>' +
+      '<div class="detail-field"><div class="detail-label">Phone</div><div class="detail-value">' + esc(c.phone || '—') + '</div></div>' +
+      '</div>' +
+      '<div class="detail-field-row">' +
+      '<div class="detail-field"><div class="detail-label">Email</div><div class="detail-value">' + esc(c.email || '—') + '</div></div>' +
+      '<div class="detail-field"><div class="detail-label">Address</div><div class="detail-value">' + esc(address || '—') + '</div></div>' +
+      '</div>' +
+      (c.notes ? '<div class="detail-field" style="margin-bottom:16px;"><div class="detail-label">Notes</div><div class="detail-value">' + esc(c.notes) + '</div></div>' : '') +
+      '<div class="subsection">' +
+      '<div class="subsection-title">Clients</div>' +
+      '<div id="customer-detail-clients"></div>' +
+      '<button class="btn btn-ghost btn-sm" type="button" id="customer-detail-add-client">+ Add client</button>' +
+      '</div>';
+    $('customer-detail-body').innerHTML = body;
+
+    var children = state.customers.filter(function (x) { return x.parent_customer_id === c.id; })
+      .sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
+    var clientsEl = $('customer-detail-clients');
+    clientsEl.innerHTML = children.length
+      ? children.map(function (child) {
+          return '<div class="client-row" data-id="' + child.id + '"><span>' + esc(child.company_name) +
+            (child.contact_name ? ' <span style="color:var(--muted);">— ' + esc(child.contact_name) + '</span>' : '') + '</span>' +
+            '<span style="color:var(--muted);">›</span></div>';
+        }).join('')
+      : '<p class="clients-empty">No clients linked to this customer yet.</p>';
+    clientsEl.querySelectorAll('.client-row').forEach(function (row) {
+      row.addEventListener('click', function () {
+        openCustomerDetailModal(state.customers.find(function (x) { return x.id === row.dataset.id; }));
+      });
+    });
+    $('customer-detail-add-client').addEventListener('click', function () {
+      hide($('modal-customer-detail'));
+      openCustomerModal(null, c.id);
+    });
+
+    show($('modal-customer-detail'));
+  }
+
+  $('customer-detail-edit').addEventListener('click', function () {
+    hide($('modal-customer-detail'));
+    openCustomerModal(state.customers.find(function (c) { return c.id === state.viewingCustomerId; }));
+  });
 
   async function refreshCustomerLogoPreview(c) {
     var box = $('customer-logo-preview');
@@ -1007,7 +1084,7 @@
     }
   }
 
-  function openCustomerModal(c) {
+  function openCustomerModal(c, presetParentId) {
     $('form-customer').reset();
     $('customer-id').value = c ? c.id : '';
     $('customer-modal-title').textContent = c ? 'Edit customer' : 'New customer';
@@ -1019,7 +1096,7 @@
       state.customers.filter(function (other) { return !c || other.id !== c.id; }).map(function (other) {
         return '<option value="' + other.id + '">' + esc(other.company_name) + '</option>';
       }).join('');
-    parentSel.value = c ? (c.parent_customer_id || '') : '';
+    parentSel.value = c ? (c.parent_customer_id || '') : (presetParentId || '');
 
     $('customer-contact').value = c ? (c.contact_name || '') : '';
     $('customer-contact-position').value = c ? (c.contact_position || '') : '';
@@ -1083,23 +1160,35 @@
       updated_at: new Date().toISOString()
     }, readAddressFields('customer', CUSTOMER_ADDR_COLS));
     var res = id ? await sb.from('customers').update(payload).eq('id', id)
-                 : await sb.from('customers').insert(payload);
+                 : await sb.from('customers').insert(payload).select().single();
     if (res.error) { toast('Could not save customer: ' + res.error.message, true); return; }
+    var savedId = id || (res.data && res.data.id);
     hide($('modal-customer'));
-    toast(id ? 'Customer saved.' : 'Customer saved. Reopen it from the list to add a logo.');
+    toast('Customer saved.');
     await loadCustomers();
     renderCustomersTable(); renderCalendar(); renderJobsTable();
+    // Land back on a detail view: a sub-client's own owner (so the new/
+    // edited client shows up in context in its parent's list), otherwise
+    // the record itself — this is also where the logo upload lives.
+    var saved = state.customers.find(function (c) { return c.id === savedId; });
+    if (saved) openCustomerDetailModal(saved.parent_customer_id ? state.customers.find(function (c) { return c.id === saved.parent_customer_id; }) : saved);
   });
 
   $('customer-delete').addEventListener('click', async function () {
     var id = $('customer-id').value;
     if (!id || !confirm('Delete this customer? Jobs linked to them will keep their history but lose the link.')) return;
+    var deleted = state.customers.find(function (c) { return c.id === id; });
     var res = await sb.from('customers').delete().eq('id', id);
     if (res.error) { toast('Could not delete customer: ' + res.error.message, true); return; }
     hide($('modal-customer'));
+    hide($('modal-customer-detail'));
     toast('Customer deleted.');
     await loadCustomers();
     renderCustomersTable(); renderCalendar(); renderJobsTable();
+    if (deleted && deleted.parent_customer_id) {
+      var parent = state.customers.find(function (c) { return c.id === deleted.parent_customer_id; });
+      if (parent) openCustomerDetailModal(parent);
+    }
   });
 
   // ── engineers ─────────────────────────────────────────────────
@@ -1311,6 +1400,15 @@
       if (status === 'unpaid') actions += '<button class="btn btn-ghost btn-sm" data-pay-action="invoice_received">Invoice received</button>';
       if (status === 'invoice_received') actions += '<button class="btn btn-primary btn-sm" data-pay-action="paid">Mark paid</button>';
       if (status !== 'unpaid') actions += ' <button class="btn btn-ghost btn-sm" data-pay-action="unpaid">Reset</button>';
+      // Audit trail: the date the invoice actually came in, plus a link to
+      // view the file if one was attached (either uploaded on the spot or
+      // picked from an invoice already on file for this contractor).
+      var invoiceCell = '—';
+      if (r.line.invoice_received_at) {
+        var invDate = shortDate(new Date(r.line.invoice_received_at));
+        var linkedInvoice = r.line.id ? state.invoiceByLineId[r.line.id] : null;
+        invoiceCell = esc(invDate) + (linkedInvoice ? ' <button type="button" class="btn btn-ghost btn-sm" data-view-invoice="' + linkedInvoice.file_path + '">View</button>' : '');
+      }
       return '<tr data-line-id="' + (r.line.id || '') + '" data-legacy="' + (r.legacy ? '1' : '') + '" data-job-id="' + r.job.id + '" data-engineer-id="' + (r.line.engineer_id || '') + '">' +
         '<td>' + (d ? shortDate(d) : '—') + '</td>' +
         '<td>' + esc(customerName(r.job.customer_id)) + '</td>' +
@@ -1319,21 +1417,71 @@
         '<td>' + esc(r.engineer ? r.engineer.name : 'Unknown contractor') + '</td>' +
         '<td>' + (cost != null ? money(cost) : '—') + '</td>' +
         '<td><span class="badge status-' + status + '">' + paymentStatusLabel(status) + '</span></td>' +
+        '<td>' + invoiceCell + '</td>' +
         '<td class="row-actions">' + actions + '</td></tr>';
     }).join('');
+
+    $('payments-tbody').querySelectorAll('[data-view-invoice]').forEach(function (btn) {
+      btn.addEventListener('click', async function (e) {
+        e.stopPropagation();
+        var url = await signedUrl('contractor-invoices', btn.dataset.viewInvoice, 300);
+        if (!url) { toast('Could not open invoice.', true); return; }
+        window.open(url, '_blank');
+      });
+    });
+
     $('payments-tbody').querySelectorAll('[data-pay-action]').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         var tr = btn.closest('tr');
         var newStatus = btn.dataset.payAction;
+        var isLegacy = !!tr.dataset.legacy;
+        var lineId = tr.dataset.lineId;
+
+        // "Invoice received" on a real booking line opens the upload/link
+        // modal instead of flipping the status directly — a legacy
+        // (not-yet-migrated) row has no real booking-line id to attach a
+        // file to, so it keeps the old one-click behaviour.
+        if (newStatus === 'invoice_received' && !isLegacy) {
+          var row = paymentRows().find(function (r) { return !r.legacy && r.line.id === lineId; });
+          if (row) { openInvoiceModal(row); return; }
+        }
+
+        // "Mark paid" on a line that came in as part of a multi-job invoice
+        // offers to settle the whole invoice at once.
+        var extraLineIds = [];
+        if (newStatus === 'paid' && !isLegacy) {
+          var invoice = state.invoiceByLineId[lineId];
+          if (invoice) {
+            var siblings = await sb.from('invoice_booking_lines').select('booking_line_id').eq('invoice_id', invoice.id);
+            var siblingIds = (siblings.data || []).map(function (s) { return s.booking_line_id; }).filter(function (id) { return id !== lineId; });
+            var stillOwing = siblingIds.filter(function (id) {
+              var line = state.jobs.reduce(function (found, j) {
+                return found || (j.bookingLines || []).find(function (l) { return l.id === id; });
+              }, null);
+              return line && line.payment_status !== 'paid';
+            });
+            if (stillOwing.length && confirm('This invoice also covers ' + stillOwing.length + ' other booking' + (stillOwing.length === 1 ? '' : 's') + ' for this contractor. Mark ' + (stillOwing.length === 1 ? 'it' : 'them') + ' as paid too?')) {
+              extraLineIds = stillOwing;
+            }
+          }
+        }
+
         var patch = { payment_status: newStatus };
-        if (newStatus === 'invoice_received') patch.invoice_received_at = new Date().toISOString();
         if (newStatus === 'paid') patch.paid_at = new Date().toISOString();
         if (newStatus === 'unpaid') { patch.invoice_received_at = null; patch.paid_at = null; }
-        var res = tr.dataset.legacy
+
+        var res = isLegacy
           ? await sb.from('job_engineers').update(patch).eq('job_id', tr.dataset.jobId).eq('engineer_id', tr.dataset.engineerId)
-          : await sb.from('job_booking_lines').update(patch).eq('id', tr.dataset.lineId);
+          : await sb.from('job_booking_lines').update(patch).in('id', [lineId].concat(extraLineIds));
         if (res.error) { toast('Could not update payment status: ' + res.error.message, true); return; }
+
+        if (newStatus === 'unpaid' && !isLegacy) {
+          // Resetting means "not actually invoiced" — drop the audit link too.
+          await sb.from('invoice_booking_lines').delete().eq('booking_line_id', lineId);
+        }
+
         await loadJobs();
+        await loadInvoiceLinks();
         renderPaymentsTable();
         toast('Payment status updated.');
       });
@@ -1341,6 +1489,121 @@
   }
   $('payments-status-filter').addEventListener('change', renderPaymentsTable);
   $('payments-search').addEventListener('input', renderPaymentsTable);
+
+  // ── record invoice received (upload / link, possibly to several jobs) ──
+  function invoiceModalContextLabel(row) {
+    var d = row.line.booking_date ? shortDate(new Date(row.line.booking_date + 'T00:00:00')) : '—';
+    return (row.engineer ? row.engineer.name : 'Unknown contractor') + ' — ' + d + ', ' +
+      (row.job.client_name || customerName(row.job.customer_id)) +
+      (row.line.charge_rate_name ? ', ' + row.line.charge_rate_name : '') +
+      (row.line.cost_amount != null ? ' (' + money(row.line.cost_amount) + ')' : '');
+  }
+
+  async function openInvoiceModal(row) {
+    state.invoiceModalRow = row;
+    $('invoice-modal-context').textContent = invoiceModalContextLabel(row);
+    $('invoice-upload-file').value = '';
+    $('invoice-upload-amount').value = '';
+    $('invoice-upload-notes').value = '';
+
+    var engineerId = row.engineer ? row.engineer.id : row.line.engineer_id;
+
+    // Recent invoices already on file for this contractor, in case this
+    // job's invoice was already uploaded via the Contractor screen.
+    var existingList = $('invoice-existing-list');
+    var existingSection = $('invoice-existing-section');
+    existingList.innerHTML = '<p class="invoices-empty">Loading…</p>';
+    existingSection.hidden = false;
+    var invoices = engineerId ? await loadEngineerInvoices(engineerId) : [];
+    invoices = invoices.slice(0, 8);
+    if (!invoices.length) {
+      existingSection.hidden = true;
+      existingList.innerHTML = '';
+    } else {
+      existingList.innerHTML = invoices.map(function (inv, idx) {
+        var d = shortDate(new Date(inv.uploaded_at));
+        var amount = inv.amount != null ? ' · ' + money(inv.amount) : '';
+        return '<div class="invoice-pick-row"><label>' +
+          '<input type="radio" name="invoice-existing-pick" value="' + inv.id + '">' +
+          '<span>' + esc(inv.file_name || 'Invoice') + '<br><span class="invoice-line-meta">' + d + amount + '</span></span>' +
+          '</label></div>';
+      }).join('');
+    }
+
+    // Other currently-unpaid bookings for the same contractor, in case one
+    // invoice covers several jobs.
+    var otherSection = $('invoice-other-lines-section');
+    var otherList = $('invoice-other-lines');
+    var others = engineerId ? paymentRows().filter(function (r) {
+      return !r.legacy && r.line.id !== row.line.id && (r.engineer ? r.engineer.id : r.line.engineer_id) === engineerId &&
+        (r.line.payment_status || 'unpaid') === 'unpaid';
+    }) : [];
+    if (!others.length) {
+      otherSection.hidden = true;
+      otherList.innerHTML = '';
+    } else {
+      otherSection.hidden = false;
+      otherList.innerHTML = others.map(function (r) {
+        var d = r.line.booking_date ? shortDate(new Date(r.line.booking_date + 'T00:00:00')) : '—';
+        return '<div class="other-line-row"><label>' +
+          '<input type="checkbox" value="' + r.line.id + '">' +
+          '<span>' + d + ' — ' + esc(r.job.client_name || customerName(r.job.customer_id)) +
+          (r.line.charge_rate_name ? ', ' + esc(r.line.charge_rate_name) : '') +
+          (r.line.cost_amount != null ? ' <span class="invoice-line-meta">(' + money(r.line.cost_amount) + ')</span>' : '') +
+          '</span></label></div>';
+      }).join('');
+    }
+
+    show($('modal-invoice-received'));
+  }
+
+  $('invoice-modal-save').addEventListener('click', async function () {
+    var row = state.invoiceModalRow;
+    if (!row) return;
+    var btn = this;
+    btn.disabled = true;
+
+    var lineIds = [row.line.id];
+    $('invoice-other-lines').querySelectorAll('input[type=checkbox]:checked').forEach(function (cb) { lineIds.push(cb.value); });
+
+    var existingPick = $('invoice-existing-list').querySelector('input[name=invoice-existing-pick]:checked');
+    var invoiceId = existingPick ? existingPick.value : null;
+    var file = $('invoice-upload-file').files[0];
+
+    if (!invoiceId && file) {
+      var engineerId = row.engineer ? row.engineer.id : row.line.engineer_id;
+      var path = 'engineers/' + engineerId + '/invoice-' + Date.now() + '-' + file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      var up = await sb.storage.from('contractor-invoices').upload(path, file);
+      if (up.error) { toast('Could not upload invoice: ' + up.error.message, true); btn.disabled = false; return; }
+      var amountVal = $('invoice-upload-amount').value;
+      var ins = await sb.from('engineer_invoices').insert({
+        engineer_id: engineerId,
+        file_path: path,
+        file_name: file.name,
+        amount: amountVal === '' ? null : Number(amountVal),
+        notes: $('invoice-upload-notes').value.trim()
+      }).select().single();
+      if (ins.error) { toast('Could not save invoice record: ' + ins.error.message, true); btn.disabled = false; return; }
+      invoiceId = ins.data.id;
+    }
+
+    var nowIso = new Date().toISOString();
+    var statusRes = await sb.from('job_booking_lines').update({ payment_status: 'invoice_received', invoice_received_at: nowIso }).in('id', lineIds);
+    if (statusRes.error) { toast('Could not update payment status: ' + statusRes.error.message, true); btn.disabled = false; return; }
+
+    if (invoiceId) {
+      var links = lineIds.map(function (lid) { return { invoice_id: invoiceId, booking_line_id: lid }; });
+      var linkRes = await sb.from('invoice_booking_lines').insert(links);
+      if (linkRes.error) { toast('Payment status saved, but could not link the invoice: ' + linkRes.error.message, true); }
+    }
+
+    btn.disabled = false;
+    hide($('modal-invoice-received'));
+    toast('Invoice recorded.');
+    await loadJobs();
+    await loadInvoiceLinks();
+    renderPaymentsTable();
+  });
 
   // ── reports ───────────────────────────────────────────────────
   document.querySelectorAll('.report-tab').forEach(function (btn) {
