@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin | Recomworks Ltd</title>
+<link rel="icon" href="assets/logo-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+
+<!-- ══════════════════ AUTH SCREENS ══════════════════ -->
+<div class="auth-wrap" id="auth-wrap">
+
+  <!-- Login -->
+  <div class="auth-card" id="card-login">
+    <div class="auth-logo"><img src="assets/logo-icon.png" alt=""><span>Recomworks</span></div>
+    <h2>Admin sign in</h2>
+    <p class="auth-sub">Staff access only.</p>
+    <p class="auth-error" id="login-error" hidden></p>
+    <form id="form-login">
+      <div class="field">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" required autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" required autocomplete="current-password">
+      </div>
+      <button class="btn btn-primary" type="submit" id="login-submit" style="width:100%;">Sign in</button>
+    </form>
+  </div>
+
+  <!-- MFA challenge (returning user with 2FA already set up) -->
+  <div class="auth-card" id="card-mfa-challenge" hidden>
+    <div class="auth-logo"><img src="assets/logo-icon.png" alt=""><span>Recomworks</span></div>
+    <h2>Enter your 2FA code</h2>
+    <p class="auth-sub">Open your authenticator app and enter the current 6-digit code.</p>
+    <p class="auth-error" id="challenge-error" hidden></p>
+    <form id="form-challenge">
+      <div class="field">
+        <label for="challenge-code">Authentication code</label>
+        <input id="challenge-code" class="totp-code-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required>
+      </div>
+      <button class="btn btn-primary" type="submit" style="width:100%;">Verify</button>
+    </form>
+    <p style="margin-top:16px;"><button class="btn btn-ghost btn-sm" id="btn-cancel-challenge" type="button">Sign in as someone else</button></p>
+  </div>
+
+  <!-- MFA enrolment (first sign-in, no factor yet — mandatory) -->
+  <div class="auth-card" id="card-mfa-enroll" hidden style="max-width:440px;">
+    <div class="auth-logo"><img src="assets/logo-icon.png" alt=""><span>Recomworks</span></div>
+    <h2>Set up two-factor authentication</h2>
+    <p class="auth-sub">Required before you can access the admin system. Scan this with an authenticator app (Google Authenticator, Authy, 1Password, etc.)</p>
+    <div class="qr-box" id="enroll-qr-box"><span class="loading-dot"></span></div>
+    <div class="secret-box" id="enroll-secret"></div>
+    <p class="auth-error" id="enroll-error" hidden></p>
+    <form id="form-enroll">
+      <div class="field">
+        <label for="enroll-code">Enter the 6-digit code from your app</label>
+        <input id="enroll-code" class="totp-code-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required>
+      </div>
+      <button class="btn btn-primary" type="submit" style="width:100%;">Confirm & finish setup</button>
+    </form>
+  </div>
+
+</div>
+
+<!-- ══════════════════ APP SHELL ══════════════════ -->
+<div class="app-shell" id="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo"><img src="assets/logo-icon.png" alt=""><span>Recomworks</span></div>
+    <button class="nav-item active" data-view="calendar">Calendar</button>
+    <button class="nav-item" data-view="jobs">Jobs</button>
+    <button class="nav-item" data-view="customers">Customers</button>
+    <button class="nav-item" data-view="engineers">Contractors</button>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-foot">
+      <div id="sidebar-user-email" style="margin-bottom:8px; word-break:break-all;"></div>
+      <button id="btn-sign-out" type="button">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- Calendar view -->
+    <section id="view-calendar">
+      <div class="main-head">
+        <h1>Booking diary</h1>
+        <div style="display:flex; align-items:center; gap:16px;">
+          <div class="cal-nav">
+            <button class="btn btn-ghost btn-sm" id="cal-prev">&larr;</button>
+            <span class="month-label" id="cal-month-label">—</span>
+            <button class="btn btn-ghost btn-sm" id="cal-next">&rarr;</button>
+            <button class="btn btn-ghost btn-sm" id="cal-today">Today</button>
+          </div>
+          <button class="btn btn-primary" id="btn-new-job-cal">+ New job</button>
+        </div>
+      </div>
+      <div class="panel" style="overflow:hidden;">
+        <div class="cal-grid" id="cal-weekdays"></div>
+        <div class="cal-grid" id="cal-grid"></div>
+      </div>
+    </section>
+
+    <!-- Jobs list view -->
+    <section id="view-jobs" hidden>
+      <div class="main-head">
+        <h1>Jobs</h1>
+        <button class="btn btn-primary" id="btn-new-job-list">+ New job</button>
+      </div>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="jobs-table">
+            <thead>
+              <tr><th>Date</th><th>Customer</th><th>Service</th><th>Site</th><th>Engineer(s)</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody id="jobs-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="jobs-empty" hidden>No jobs booked in yet.</div>
+      </div>
+    </section>
+
+    <!-- Customers view -->
+    <section id="view-customers" hidden>
+      <div class="main-head">
+        <h1>Customers</h1>
+        <button class="btn btn-primary" id="btn-new-customer">+ New customer</button>
+      </div>
+      <div class="search-bar"><input type="text" id="customer-search" placeholder="Search customers..."></div>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="customers-table">
+            <thead><tr><th>Company</th><th>Contact</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+            <tbody id="customers-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="customers-empty" hidden>No customers yet.</div>
+      </div>
+    </section>
+
+    <!-- Engineers / contractors view -->
+    <section id="view-engineers" hidden>
+      <div class="main-head">
+        <h1>Contractors</h1>
+        <button class="btn btn-primary" id="btn-new-engineer">+ New contractor</button>
+      </div>
+      <div class="search-bar"><input type="text" id="engineer-search" placeholder="Search contractors..."></div>
+      <div class="panel">
+        <div style="overflow-x:auto;">
+          <table class="data-table" id="engineers-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Skills</th><th>Status</th><th></th></tr></thead>
+            <tbody id="engineers-tbody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="engineers-empty" hidden>No contractors added yet.</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ══════════════════ MODALS ══════════════════ -->
+
+<!-- Day detail (list of jobs on a clicked calendar day) -->
+<div class="modal-overlay" id="modal-day" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="day-modal-title">—</h2>
+      <button class="modal-close" data-close="modal-day">&times;</button>
+    </div>
+    <div id="day-modal-list" style="display:flex; flex-direction:column; gap:10px; margin-bottom:18px;"></div>
+    <button class="btn btn-primary" id="day-modal-add" style="width:100%;">+ New job this day</button>
+  </div>
+</div>
+
+<!-- Job create/edit -->
+<div class="modal-overlay" id="modal-job" hidden>
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-head">
+      <h2 id="job-modal-title">New job</h2>
+      <button class="modal-close" data-close="modal-job">&times;</button>
+    </div>
+    <form id="form-job">
+      <input type="hidden" id="job-id">
+      <div class="field">
+        <label for="job-customer">Customer</label>
+        <select id="job-customer" required></select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="job-service">Service type</label>
+          <select id="job-service">
+            <option>IT Relocations</option>
+            <option>Data Centre Migrations</option>
+            <option>IT Deployment &amp; Rollouts</option>
+            <option>Secure IT Disposal</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="job-status">Status</label>
+          <select id="job-status">
+            <option value="unassigned">Unassigned</option>
+            <option value="assigned">Assigned</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="job-site">Site address</label>
+        <input id="job-site" type="text" placeholder="Site address for this job">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="job-date">Date</label>
+          <input id="job-date" type="date" required>
+        </div>
+        <div class="field-row" style="grid-template-columns:1fr 1fr;">
+          <div class="field">
+            <label for="job-start-time">Start</label>
+            <input id="job-start-time" type="time" required>
+          </div>
+          <div class="field">
+            <label for="job-end-time">End</label>
+            <input id="job-end-time" type="time">
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="job-po">PO / reference (optional)</label>
+        <input id="job-po" type="text">
+      </div>
+      <div class="field">
+        <label>Assign contractor(s)</label>
+        <div class="engineer-picker" id="job-engineer-picker"></div>
+      </div>
+      <div class="field">
+        <label for="job-notes">Notes</label>
+        <textarea id="job-notes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger btn-sm" type="button" id="job-delete" hidden>Delete job</button>
+        <div class="modal-actions-right">
+          <button class="btn btn-ghost" type="button" data-close="modal-job">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save job</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Customer create/edit -->
+<div class="modal-overlay" id="modal-customer" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="customer-modal-title">New customer</h2>
+      <button class="modal-close" data-close="modal-customer">&times;</button>
+    </div>
+    <form id="form-customer">
+      <input type="hidden" id="customer-id">
+      <div class="field">
+        <label for="customer-company">Company name</label>
+        <input id="customer-company" type="text" required>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="customer-contact">Contact name</label>
+          <input id="customer-contact" type="text">
+        </div>
+        <div class="field">
+          <label for="customer-phone">Phone</label>
+          <input id="customer-phone" type="tel">
+        </div>
+      </div>
+      <div class="field">
+        <label for="customer-email">Email</label>
+        <input id="customer-email" type="email">
+      </div>
+      <div class="field">
+        <label for="customer-address">Address</label>
+        <textarea id="customer-address" rows="2"></textarea>
+      </div>
+      <div class="field">
+        <label for="customer-notes">Notes</label>
+        <textarea id="customer-notes" rows="2"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger btn-sm" type="button" id="customer-delete" hidden>Delete customer</button>
+        <div class="modal-actions-right">
+          <button class="btn btn-ghost" type="button" data-close="modal-customer">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save customer</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Engineer create/edit -->
+<div class="modal-overlay" id="modal-engineer" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="engineer-modal-title">New contractor</h2>
+      <button class="modal-close" data-close="modal-engineer">&times;</button>
+    </div>
+    <form id="form-engineer">
+      <input type="hidden" id="engineer-id">
+      <div class="field">
+        <label for="engineer-name">Name</label>
+        <input id="engineer-name" type="text" required>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="engineer-email">Email</label>
+          <input id="engineer-email" type="email">
+        </div>
+        <div class="field">
+          <label for="engineer-phone">Phone</label>
+          <input id="engineer-phone" type="tel">
+        </div>
+      </div>
+      <div class="field">
+        <label for="engineer-skills">Skills / notes</label>
+        <textarea id="engineer-skills" rows="2"></textarea>
+      </div>
+      <div class="field checkbox-row">
+        <input id="engineer-active" type="checkbox" checked style="width:auto;">
+        <label for="engineer-active" style="margin:0;">Active</label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-danger btn-sm" type="button" id="engineer-delete" hidden>Delete contractor</button>
+        <div class="modal-actions-right">
+          <button class="btn btn-ghost" type="button" data-close="modal-engineer">Cancel</button>
+          <button class="btn btn-primary" type="submit">Save contractor</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
