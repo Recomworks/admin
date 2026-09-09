@@ -185,3 +185,57 @@ create policy "aal2 required invoices" on storage.objects
   for all
   using ( bucket_id = 'contractor-invoices' and (select auth.jwt()->>'aal') = 'aal2' )
   with check ( bucket_id = 'contractor-invoices' and (select auth.jwt()->>'aal') = 'aal2' );
+
+
+-- ═══════════════════════════════════════════════════════════════════
+-- Update 3 — charge rates (what you bill customers), job profit
+-- tracking, and per-engineer payment status. Safe to run again.
+-- ═══════════════════════════════════════════════════════════════════
+
+-- ── Charge rates: your own admin-managed price list, e.g.
+--    "Senior Engineer" £200/day, "Standard Engineer" £165/day ────────
+create table if not exists charge_rates (
+  id            uuid primary key default gen_random_uuid(),
+  name          text not null,
+  amount        numeric(10,2) not null,
+  rate_type     text not null default 'day',
+  active        boolean not null default true,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+do $$ begin
+  alter table charge_rates add constraint charge_rates_rate_type_check check (rate_type in ('day','hour','fixed'));
+exception when duplicate_object then null;
+end $$;
+
+alter table charge_rates enable row level security;
+
+drop policy if exists "aal2 required" on charge_rates;
+create policy "aal2 required" on charge_rates
+  for all
+  using ( (select auth.jwt()->>'aal') = 'aal2' )
+  with check ( (select auth.jwt()->>'aal') = 'aal2' );
+
+-- ── Jobs: what this specific job charges the customer. The rate is
+--    picked from charge_rates, but the name/amount are copied onto the
+--    job itself so a later change to (or deletion of) a rate card entry
+--    never rewrites the price of a job already booked. ────────────────
+alter table jobs add column if not exists charge_rate_id   uuid references charge_rates(id) on delete set null;
+alter table jobs add column if not exists charge_amount    numeric(10,2);
+alter table jobs add column if not exists charge_rate_name text;
+
+-- ── job_engineers: what this engineer costs on this specific job (also
+--    a snapshot, same reasoning as above — defaults to their profile
+--    rate when assigned, but can be overridden per job), plus payment
+--    tracking so you can see, per job per engineer, whether their
+--    invoice has come in and whether they've been paid. ───────────────
+alter table job_engineers add column if not exists cost_amount         numeric(10,2);
+alter table job_engineers add column if not exists payment_status      text not null default 'unpaid';
+alter table job_engineers add column if not exists invoice_received_at timestamptz;
+alter table job_engineers add column if not exists paid_at             timestamptz;
+
+do $$ begin
+  alter table job_engineers add constraint job_engineers_payment_status_check check (payment_status in ('unpaid','invoice_received','paid'));
+exception when duplicate_object then null;
+end $$;
