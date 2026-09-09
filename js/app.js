@@ -1046,17 +1046,46 @@
 
     var children = state.customers.filter(function (x) { return x.parent_customer_id === c.id; })
       .sort(function (a, b) { return a.company_name.toLowerCase() < b.company_name.toLowerCase() ? -1 : 1; });
+
+    // Not every "client" gets a full customer record — a job's own
+    // "Client name" field is often just typed in directly (e.g. "Insight
+    // Hub" on a Burton & Smith job) without ever creating a linked
+    // sub-customer for it. Surface those too, so they're not invisible
+    // here, with a one-click way to promote one into a real record.
+    var childNamesLower = children.map(function (x) { return x.company_name.toLowerCase(); });
+    var jobClientNames = {};
+    state.jobs.forEach(function (j) {
+      var name = (j.client_name || '').trim();
+      if (name && j.customer_id === c.id && childNamesLower.indexOf(name.toLowerCase()) === -1) {
+        jobClientNames[name] = true;
+      }
+    });
+    var jobClientNameList = Object.keys(jobClientNames).sort(function (a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
+
     var clientsEl = $('customer-detail-clients');
-    clientsEl.innerHTML = children.length
-      ? children.map(function (child) {
-          return '<div class="client-row" data-id="' + child.id + '"><span>' + esc(child.company_name) +
-            (child.contact_name ? ' <span style="color:var(--muted);">— ' + esc(child.contact_name) + '</span>' : '') + '</span>' +
-            '<span style="color:var(--muted);">›</span></div>';
-        }).join('')
-      : '<p class="clients-empty">No clients linked to this customer yet.</p>';
-    clientsEl.querySelectorAll('.client-row').forEach(function (row) {
+    var rowsHtml = children.map(function (child) {
+      return '<div class="client-row" data-id="' + child.id + '"><span>' + esc(child.company_name) +
+        (child.contact_name ? ' <span style="color:var(--muted);">— ' + esc(child.contact_name) + '</span>' : '') + '</span>' +
+        '<span style="color:var(--muted);">›</span></div>';
+    }).join('');
+    rowsHtml += jobClientNameList.map(function (name) {
+      return '<div class="client-row" data-job-client-name="' + esc(name) + '" style="cursor:default;"><span>' + esc(name) +
+        ' <span class="invoice-line-meta">(seen on jobs — no customer record yet)</span></span>' +
+        '<button class="btn btn-ghost btn-sm" type="button" data-promote-client-name="' + esc(name) + '">Save as customer</button></div>';
+    }).join('');
+    clientsEl.innerHTML = rowsHtml || '<p class="clients-empty">No clients linked to this customer yet.</p>';
+
+    clientsEl.querySelectorAll('.client-row[data-id]').forEach(function (row) {
       row.addEventListener('click', function () {
         openCustomerDetailModal(state.customers.find(function (x) { return x.id === row.dataset.id; }));
+      });
+    });
+    clientsEl.querySelectorAll('[data-promote-client-name]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        hide($('modal-customer-detail'));
+        openCustomerModal(null, c.id);
+        $('customer-company').value = btn.dataset.promoteClientName;
       });
     });
     $('customer-detail-add-client').addEventListener('click', function () {
